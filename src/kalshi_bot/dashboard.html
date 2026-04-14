@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kalshi V2 — Momentum Bot</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    background: #0d1117; color: #c9d1d9; padding: 16px 20px;
+    max-width: 1200px; margin: 0 auto;
+  }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+  h1 { color: #58a6ff; font-size: 1.3em; }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  .dot-live { background: #3fb950; }
+  .dot-idle { background: #d29922; }
+  .dot-err  { background: #f85149; animation: none; }
+  @keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+  .refresh { color: #8b949e; font-size: 0.70em; display: flex; align-items: center; gap: 6px; }
+
+  h2 {
+    color: #58a6ff; margin: 18px 0 8px; font-size: 0.85em;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    border-bottom: 1px solid #21262d; padding-bottom: 4px;
+  }
+
+  .main-tabs { display: flex; gap: 2px; margin-bottom: 0; border-bottom: 1px solid #30363d; }
+  .main-tab {
+    background: transparent; border: 1px solid transparent;
+    border-bottom: none; border-radius: 6px 6px 0 0;
+    padding: 7px 16px; color: #8b949e; font-size: 0.78em;
+    cursor: pointer; font-family: inherit; text-transform: uppercase;
+    letter-spacing: 0.05em; transition: color 0.15s, background 0.15s;
+  }
+  .main-tab:hover { color: #c9d1d9; }
+  .main-tab.active {
+    background: #161b22; border-color: #30363d;
+    color: #58a6ff; border-bottom: 1px solid #161b22;
+    margin-bottom: -1px;
+  }
+  .tab-content { display: none; padding-top: 16px; }
+  .tab-content.active { display: block; }
+
+  .sub-toggle { display: flex; gap: 2px; margin-bottom: 12px; }
+  .sub-btn {
+    background: #161b22; border: 1px solid #30363d; border-radius: 4px;
+    padding: 4px 12px; color: #8b949e; font-size: 0.70em;
+    cursor: pointer; font-family: inherit; text-transform: uppercase;
+  }
+  .sub-btn.active { background: #21262d; color: #c9d1d9; border-color: #58a6ff; }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px; margin-bottom: 10px;
+  }
+  .card {
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 6px; padding: 10px 12px;
+  }
+  .card .label { font-size: 0.65em; color: #8b949e; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card .value { font-size: 1.35em; font-weight: bold; margin-top: 2px; }
+
+  .pos { color: #3fb950; }
+  .neg { color: #f85149; }
+  .neu { color: #c9d1d9; }
+
+  table {
+    width: 100%; border-collapse: collapse;
+    background: #161b22; border-radius: 6px; overflow: hidden;
+    margin-bottom: 16px; font-size: 0.80em;
+  }
+  th {
+    background: #21262d; text-align: left; padding: 7px 10px;
+    font-size: 0.72em; color: #8b949e; text-transform: uppercase;
+    letter-spacing: 0.04em; white-space: nowrap;
+  }
+  td { padding: 6px 10px; border-top: 1px solid #21262d; }
+  tr:hover { background: #1c2128; }
+
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 0.76em; font-weight: bold; }
+  .badge-trade { background: #1f4e2a; color: #3fb950; }
+  .badge-paper { background: #1a2a4a; color: #58a6ff; }
+  .badge-skip  { background: #2a1f1f; color: #f85149; }
+  .badge-up    { background: #1f4e2a; color: #3fb950; }
+  .badge-down  { background: #2a1f1f; color: #f85149; }
+
+  #chart-container {
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 6px; padding: 10px; margin-bottom: 16px;
+  }
+  svg#chart { width: 100%; height: 160px; }
+
+  .strategy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; margin-bottom: 16px; }
+  .strategy-card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; }
+  .strategy-card .strat-name { color: #8b949e; font-size: 0.72em; text-transform: uppercase; }
+  .strategy-card .strat-val { font-size: 1.1em; font-weight: bold; margin-top: 2px; }
+
+  .ai-card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 14px; margin-bottom: 10px; }
+  .ai-card .ai-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .ai-card .ai-window { font-size: 0.82em; font-weight: bold; color: #c9d1d9; }
+  .ai-card .ai-stats { font-size: 0.75em; color: #8b949e; margin-bottom: 6px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .ai-card .ai-body { font-size: 0.82em; line-height: 1.45; color: #c9d1d9; border-left: 2px solid #30363d; padding-left: 10px; font-style: italic; }
+  .ai-card .ai-body.empty { color: #484f58; font-style: normal; }
+
+  .health-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .health-pill { display: flex; align-items: center; gap: 5px; background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 3px 10px; font-size: 0.68em; }
+  .health-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .health-ok { background: #3fb950; }
+  .health-warn { background: #d29922; }
+  .health-stale { background: #f85149; }
+
+  .dl-panel { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px 14px; margin-bottom: 14px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .dl-label { font-size: 0.68em; color: #8b949e; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 4px; }
+  .dl-btn { background: #21262d; border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9; font-size: 0.72em; font-family: inherit; padding: 4px 10px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; transition: background 0.15s, border-color 0.15s; }
+  .dl-btn:hover { background: #30363d; border-color: #58a6ff; color: #58a6ff; }
+  .dl-btn.primary { border-color: #388bfd; color: #58a6ff; }
+  .dl-btn.primary:hover { background: #1f3a6e; }
+
+  .live-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .live-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; }
+  .live-card .sym { font-size: 0.72em; color: #8b949e; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+  .live-card .price { font-size: 1.6em; font-weight: bold; color: #c9d1d9; }
+  .live-card .sub { font-size: 0.78em; color: #8b949e; margin-top: 4px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .live-card .sub span { white-space: nowrap; }
+  .live-bar { background: #21262d; border-radius: 4px; height: 6px; margin-top: 8px; overflow: hidden; }
+  .live-bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
+  .no-data { color: #484f58; font-size: 0.82em; padding: 20px; text-align: center; background: #161b22; border: 1px dashed #30363d; border-radius: 6px; }
+  .sse-status { font-size: 0.70em; color: #8b949e; display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 768px) {
+    .split { grid-template-columns: 1fr; }
+    .cards { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+    .live-grid { grid-template-columns: 1fr; }
+  }
+
+  .table-wrap { overflow-x: auto; margin-bottom: 16px; }
+  .table-wrap table { margin-bottom: 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>&#x1F916; Kalshi V2 — Momentum Bot</h1>
+  <div class="refresh" id="refresh"><span class="status-dot dot-idle"></span> Loading...</div>
+</header>
+
+<div class="main-tabs">
+  <button class="main-tab active" onclick="switchTab('live')">&#9679; Live</button>
+  <button class="main-tab" onclick="switchTab('overview')">Overview</button>
+  <button class="main-tab" onclick="switchTab('trades')">Trades</button>
+  <button class="main-tab" onclick="switchTab('analysis')">Analysis</button>
+  <button class="main-tab" onclick="switchTab('data')">Data</button>
+</div>
+
+<div id="tab-live" class="tab-content active">
+  <div class="sse-status">
+    <span class="status-dot dot-idle" id="sse-dot"></span>
+    <span id="sse-label">Connecting to live feed...</span>
+  </div>
+
+  <div id="live-pnl-cards" class="cards" style="margin-bottom:14px;"></div>
+
+  <h2>Active Windows</h2>
+  <div id="live-grid" class="live-grid">
+    <div class="no-data">Waiting for first cycle data...</div>
+  </div>
+
+  <h2>Kalshi Prices</h2>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Symbol</th><th>Ticker</th><th>YES Ask</th><th>YES Bid</th><th>Model Prob</th><th>Dynamic K</th><th>Remaining</th></tr>
+    </thead>
+    <tbody id="live-kalshi-rows"></tbody>
+  </table>
+  </div>
+</div>
+
+<div id="tab-overview" class="tab-content">
+  <div class="sub-toggle">
+    <button class="sub-btn active" id="btn-session" onclick="switchView('session')">Session</button>
+    <button class="sub-btn" id="btn-all" onclick="switchView('all')">All Time</button>
+  </div>
+
+  <div class="cards" id="cards-summary"></div>
+  <div class="cards" id="cards-stats" style="margin-top:6px;"></div>
+
+  <div class="split">
+    <div>
+      <h2>Cumulative P&amp;L</h2>
+      <div id="chart-container">
+        <svg id="chart" viewBox="0 0 800 140" preserveAspectRatio="none"></svg>
+      </div>
+    </div>
+    <div>
+      <h2>Strategy Breakdown</h2>
+      <div class="strategy-grid" id="strategy-grid"></div>
+
+      <h2>Open Positions</h2>
+      <table>
+        <thead><tr><th>Ticker</th><th>Side</th><th>Qty</th><th>Cost</th></tr></thead>
+        <tbody id="positions"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <h2>Per-Symbol Performance</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Symbol</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Avg P&amp;L</th><th>Total P&amp;L</th><th>Fees</th></tr></thead>
+    <tbody id="symbol-stats"></tbody>
+  </table>
+  </div>
+</div>
+
+<div id="tab-trades" class="tab-content">
+  <div class="split">
+    <div>
+      <h2>Signal Feed (Momentum)</h2>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time (EST)</th><th>Action</th><th>Strategy</th><th>Ticker</th><th>Side</th><th>Edge</th><th>Secs</th></tr></thead>
+        <tbody id="signals"></tbody>
+      </table>
+      </div>
+    </div>
+    <div>
+      <h2>Recent Trades</h2>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time (EST)</th><th>Ticker</th><th>Side</th><th>Qty</th><th>Price</th><th>Edge</th><th>Fees</th><th>P&amp;L</th></tr></thead>
+        <tbody id="trades"></tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="tab-analysis" class="tab-content">
+  <h2>AI Window Analysis</h2>
+  <div id="ai-analyses"></div>
+
+  <h2>Window History</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Window (EST)</th><th>Symbol</th><th>Open</th><th>Close</th><th>Change</th><th>Result</th><th>Signals</th><th>Trades</th><th>P&amp;L</th></tr></thead>
+    <tbody id="windows"></tbody>
+  </table>
+  </div>
+</div>
+
+<div id="tab-data" class="tab-content">
+  <h2>Data Health</h2>
+  <div class="health-bar" id="health-bar"></div>
+
+  <h2>Export</h2>
+  <div class="dl-panel">
+    <span class="dl-label">&#8595; Download</span>
+    <a class="dl-btn primary" href="/download/full.json" download>&#x1F4E6; Full JSON</a>
+    <a class="dl-btn" href="/download/trades.csv" download>Trades CSV</a>
+    <a class="dl-btn" href="/download/pnl.csv" download>P&amp;L History CSV</a>
+    <a class="dl-btn" href="/download/signals.csv" download>Signals CSV</a>
+    <a class="dl-btn" href="/download/windows.csv" download>Windows CSV</a>
+    <a class="dl-btn" href="/download/strategy_evals.csv" download>Strategy Evals CSV</a>
+  </div>
+  <p style="font-size:0.72em;color:#484f58;margin-top:4px">
+    Full JSON export contains trades, signals, P&amp;L and window analyses only (raw sensor tables excluded to keep size small).
+    Use the individual CSVs above for raw data.
+  </p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt2 = n => (n != null ? Number(n).toFixed(2) : '—');
+let currentView = 'session';
+let activeTab = 'live';
+
+const TZ = 'America/New_York';
+function toEST(ts) {
+  if (!ts) return '—';
+  try {
+    const s = ts.replace(' ', 'T');
+    const d = new Date(s.endsWith('Z') || s.includes('+') ? s : s + 'Z');
+    return d.toLocaleString('en-US', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false });
+  } catch (_) { return ts.slice(11, 16); }
+}
+function toESTFull(ts) {
+  if (!ts) return '—';
+  try {
+    const s = ts.replace(' ', 'T');
+    const d = new Date(s.endsWith('Z') || s.includes('+') ? s : s + 'Z');
+    return d.toLocaleString('en-US', { timeZone: TZ, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  } catch (_) { return ts.slice(11, 19); }
+}
+
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.main-tab').forEach((b, i) => {
+    const tabs = ['live','overview','trades','analysis','data'];
+    b.classList.toggle('active', tabs[i] === tab);
+  });
+  document.querySelectorAll('.tab-content').forEach(el => {
+    el.classList.toggle('active', el.id === 'tab-' + tab);
+  });
+  if (tab !== 'live') load();
+}
+
+function switchView(view) {
+  currentView = view;
+  $('btn-session').classList.toggle('active', view === 'session');
+  $('btn-all').classList.toggle('active', view === 'all');
+  load();
+}
+
+const qs = () => currentView === 'all' ? '?all=true' : '';
+const fmtPnl = n => {
+  if (n == null) return '<span class="neu">—</span>';
+  const v = Number(n);
+  const cls = v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu';
+  return `<span class="${cls}">${v >= 0 ? '+' : ''}$${v.toFixed(2)}</span>`;
+};
+const fmtPct = n => {
+  const v = Number(n) * 100;
+  const cls = v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu';
+  return `<span class="${cls}">${v >= 0 ? '+' : ''}${v.toFixed(3)}%</span>`;
+};
+const shortTime = toEST;
+
+function card(label, value, cls) {
+  return `<div class="card"><div class="label">${label}</div><div class="value ${cls || 'neu'}">${value}</div></div>`;
+}
+
+let sseSource = null;
+let sseConnected = false;
+
+function connectSSE() {
+  if (sseSource) sseSource.close();
+  sseSource = new EventSource('/api/live');
+
+  sseSource.onopen = () => {
+    sseConnected = true;
+    $('sse-dot').className = 'status-dot dot-live';
+    $('sse-label').textContent = 'Live — connected';
+  };
+
+  sseSource.onmessage = (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      if (data && data.updated_at) renderLive(data);
+    } catch (_) {}
+  };
+
+  sseSource.onerror = () => {
+    sseConnected = false;
+    $('sse-dot').className = 'status-dot dot-err';
+    $('sse-label').textContent = 'Disconnected — reconnecting...';
+    setTimeout(() => {
+      if (!sseConnected) {
+        $('sse-dot').className = 'status-dot dot-idle';
+        $('sse-label').textContent = 'Reconnecting...';
+      }
+    }, 3000);
+  };
+}
+
+function renderLive(data) {
+  const age = data.updated_at ? Math.round((Date.now() - new Date(data.updated_at).getTime()) / 1000) : null;
+  $('sse-label').textContent = `Live — updated ${age != null ? age + 's ago' : ''}`;
+
+  const pnl = Number(data.daily_pnl || 0);
+  const pnlCls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'neu';
+  $('live-pnl-cards').innerHTML =
+    card('Daily P&amp;L', `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`, pnlCls) +
+    card('Open Positions', data.open_positions || 0);
+
+  const symbols = data.symbols || {};
+  const symKeys = Object.keys(symbols);
+
+  if (!symKeys.length) {
+    $('live-grid').innerHTML = '<div class="no-data">No active windows yet. Bot is running...</div>';
+    $('live-kalshi-rows').innerHTML = '';
+    return;
+  }
+
+  $('live-grid').innerHTML = symKeys.map(sym => {
+    const s = symbols[sym];
+    const pct = s.price_change_pct || 0;
+    const pctCls = pct >= 0 ? 'pos' : 'neg';
+    const pctStr = (pct * 100).toFixed(3);
+    const mins = Math.floor((s.seconds_remaining || 0) / 60);
+    const secs = (s.seconds_remaining || 0) % 60;
+    const timeStr = `${mins}m ${secs.toString().padStart(2,'0')}s`;
+    const prob = s.model_prob != null ? (s.model_prob * 100).toFixed(1) : '—';
+    const probCls = s.model_prob != null ? (s.model_prob >= 0.5 ? 'pos' : 'neg') : 'neu';
+    const progress = s.seconds_remaining != null ? Math.max(0, 1 - s.seconds_remaining / 900) : 0;
+    const barCol = pct >= 0 ? '#3fb950' : '#f85149';
+    return `<div class="live-card">
+      <div class="sym">${sym}</div>
+      <div class="price">$${Number(s.current_price || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</div>
+      <div class="sub">
+        <span>Open: $${Number(s.open_price||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+        <span class="${pctCls}">${pct>=0?'+':''}${pctStr}%</span>
+        <span>⏱ ${timeStr}</span>
+        <span>P(UP): <span class="${probCls}">${prob}%</span></span>
+      </div>
+      <div class="live-bar"><div class="live-bar-fill" style="width:${(progress*100).toFixed(1)}%;background:${barCol}"></div></div>
+    </div>`;
+  }).join('');
+
+  $('live-kalshi-rows').innerHTML = symKeys.map(sym => {
+    const s = symbols[sym];
+    const ask = s.kalshi_yes_ask != null ? `$${Number(s.kalshi_yes_ask).toFixed(2)}` : '—';
+    const bid = s.kalshi_yes_bid != null ? `$${Number(s.kalshi_yes_bid).toFixed(2)}` : '—';
+    const prob = s.model_prob != null ? `${(s.model_prob*100).toFixed(1)}%` : '—';
+    const k = s.dynamic_k != null ? s.dynamic_k.toFixed(0) : '—';
+    const secs = s.seconds_remaining != null ? `${s.seconds_remaining}s` : '—';
+    const short = (s.ticker || '').slice(-14);
+    return `<tr><td><strong>${sym}</strong></td><td><code>${short}</code></td><td>${ask}</td><td>${bid}</td><td>${prob}</td><td>${k}</td><td>${secs}</td></tr>`;
+  }).join('');
+
+  const nowEST2 = new Date().toLocaleTimeString('en-US', { timeZone: TZ, hour12: false });
+  $('refresh').innerHTML = '<span class="status-dot dot-live"></span> ' + nowEST2 + ' EST';
+}
+
+function drawChart(data) {
+  const svg = $('chart');
+  if (!data.length) {
+    svg.innerHTML = '<text x="400" y="70" fill="#8b949e" text-anchor="middle" font-size="13" font-family="monospace">No data yet</text>';
+    return;
+  }
+  let cum = 0;
+  const pts = [0, ...data.map(t => { cum += (t.pnl || 0); return cum; })];
+  const W = 740, H = 110, padL = 46, padT = 8, padB = 20;
+  const minP = Math.min(0, ...pts);
+  const maxP = Math.max(0, ...pts);
+  const range = Math.max(0.01, maxP - minP);
+  const toX = i => padL + (i / Math.max(1, pts.length - 1)) * W;
+  const toY = v => padT + H - ((v - minP) / range) * H;
+  const baseY = toY(0);
+  const polyPts = pts.map((p, i) => `${toX(i).toFixed(1)},${toY(p).toFixed(1)}`).join(' ');
+  const last = pts[pts.length - 1];
+  const lineCol = last >= 0 ? '#3fb950' : '#f85149';
+  let timeLabels = '';
+  if (data.length > 1) {
+    const step = Math.max(1, Math.floor(data.length / 5));
+    for (let i = 0; i < data.length; i += step) {
+      const ts = data[i].timestamp || '';
+      const label = ts.slice(11, 16);
+      timeLabels += `<text x="${toX(i+1).toFixed(1)}" y="${padT+H+padB-2}" fill="#484f58" font-size="9" text-anchor="middle" font-family="monospace">${label}</text>`;
+    }
+  }
+  svg.innerHTML = `
+    <line x1="${padL}" y1="${baseY.toFixed(1)}" x2="${padL+W}" y2="${baseY.toFixed(1)}" stroke="#30363d" stroke-width="1"/>
+    <polyline points="${polyPts}" fill="none" stroke="${lineCol}" stroke-width="2"/>
+    <text x="${padL-4}" y="${toY(maxP).toFixed(1)+4}" fill="#8b949e" font-size="10" text-anchor="end" font-family="monospace">$${maxP.toFixed(2)}</text>
+    <text x="${padL-4}" y="${baseY.toFixed(1)}" fill="#8b949e" font-size="10" text-anchor="end" dominant-baseline="middle" font-family="monospace">$0</text>
+    ${minP < 0 ? `<text x="${padL-4}" y="${toY(minP).toFixed(1)}" fill="#8b949e" font-size="10" text-anchor="end" dominant-baseline="hanging" font-family="monospace">$${minP.toFixed(2)}</text>` : ''}
+    <circle cx="${toX(pts.length-1).toFixed(1)}" cy="${toY(last).toFixed(1)}" r="3" fill="${lineCol}"/>
+    <text x="${(toX(pts.length-1)+8).toFixed(1)}" y="${(toY(last)+3).toFixed(1)}" fill="${lineCol}" font-size="10" font-family="monospace">${last>=0?'+':''}$${last.toFixed(2)}</text>
+    ${timeLabels}
+  `;
+}
+
+function renderAnalyses(analyses) {
+  const el = $('ai-analyses');
+  if (!analyses || !analyses.length) {
+    el.innerHTML = '<div class="ai-card"><div class="ai-body empty">No window analyses yet. AI commentary appears after each 15-min window closes.</div></div>';
+    return;
+  }
+  el.innerHTML = analyses.slice(0, 5).map(a => {
+    const openT = shortTime(a.window_open);
+    const closeT = shortTime(a.window_close);
+    const pctCls = a.price_change_pct >= 0 ? 'pos' : 'neg';
+    const pctStr = (a.price_change_pct * 100).toFixed(3);
+    const resBadge = a.result === 'up' ? '<span class="badge badge-up">UP</span>' : '<span class="badge badge-down">DOWN</span>';
+    const commentary = a.ai_commentary ? `<div class="ai-body">${a.ai_commentary}</div>` : '<div class="ai-body empty">No AI commentary</div>';
+    const pnlStr = a.paper_pnl != null ? fmtPnl(a.paper_pnl) : '—';
+    return `<div class="ai-card"><div class="ai-header"><span class="ai-window">${a.symbol} ${openT}–${closeT} UTC ${resBadge}</span></div><div class="ai-stats"><span>Δ <span class="${pctCls}">${a.price_change_pct >= 0 ? '+' : ''}${pctStr}%</span></span><span>Signals: ${a.signals_count}</span><span>Trades: ${a.trades_count}</span><span>P&L: ${pnlStr}</span></div>${commentary}</div>`;
+  }).join('');
+}
+
+async function load() {
+  try {
+    const q = qs();
+    const [summary, stats, rolling, signals, trades, windows, health, symbolStats] = await Promise.all([
+      fetch('/api/summary' + q).then(r => r.json()),
+      fetch('/api/stats' + q).then(r => r.json()),
+      fetch('/api/pnl_rolling' + q).then(r => r.json()),
+      fetch('/api/signals?limit=25').then(r => r.json()),
+      fetch('/api/trades?limit=30').then(r => r.json()),
+      fetch('/api/windows?limit=10').then(r => r.json()),
+      fetch('/api/health').then(r => r.json()),
+      fetch('/api/stats_by_symbol' + q).then(r => r.json()),
+    ]);
+
+    const pnl = Number(summary.total_pnl || 0);
+    const pnlCls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'neu';
+    $('cards-summary').innerHTML =
+      card('Session P&amp;L', `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`, pnlCls) +
+      card('Trades', summary.total_trades || 0) +
+      card('Wins', summary.wins || 0, 'pos') +
+      card('Losses', summary.losses || 0, 'neg') +
+      card('Pending', summary.pending || 0) +
+      card('In Positions', `$${(summary.total_in_positions || 0).toFixed(2)}`);
+
+    const hb = $('health-bar');
+    const now = Date.now();
+    hb.innerHTML = Object.entries(health).map(([tbl, info]) => {
+      const lt = info.last_timestamp;
+      let dotCls = 'health-stale';
+      if (lt) {
+        const age = (now - new Date(lt + 'Z').getTime()) / 1000;
+        dotCls = age < 120 ? 'health-ok' : age < 600 ? 'health-warn' : 'health-stale';
+      }
+      const cnt = info.count != null ? info.count.toLocaleString() : '0';
+      const label = tbl.replace(/_/g, ' ');
+      return `<div class="health-pill"><span class="health-dot ${dotCls}"></span>${label} (${cnt})</div>`;
+    }).join('');
+
+    const wr = ((stats.win_rate || 0) * 100).toFixed(1);
+    const wrCls = (stats.win_rate || 0) >= 0.5 ? 'pos' : 'neg';
+    const netPnl = Number(stats.total_pnl || 0);
+    const netCls = netPnl >= 0 ? 'pos' : 'neg';
+    $('cards-stats').innerHTML =
+      card('Win Rate', `${wr}%`, wrCls) +
+      card('Avg P&amp;L', `$${fmt2(stats.avg_pnl)}`, netCls) +
+      card('Net P&amp;L', `${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)}`, netCls) +
+      card('Fees', `$${fmt2(stats.total_fees)}`, 'neg') +
+      (stats.best_trade ? card('Best', `+$${stats.best_trade.pnl}`, 'pos') : '') +
+      (stats.worst_trade ? card('Worst', `$${stats.worst_trade.pnl}`, 'neg') : '');
+
+    drawChart(rolling);
+
+    const strats = stats.by_strategy || [];
+    if (strats.length) {
+      $('strategy-grid').innerHTML = strats.map(s => {
+        const sWr = s.trades ? ((s.wins / s.trades) * 100).toFixed(0) : 0;
+        const sPnl = Number(s.total_pnl || 0);
+        const sCls = sPnl >= 0 ? 'pos' : 'neg';
+        return `<div class="strategy-card"><div class="strat-name">${s.strategy.replace('_', ' ')}</div><div class="strat-val ${sCls}">${sPnl >= 0 ? '+' : ''}$${sPnl.toFixed(2)}</div><div style="color:#8b949e;font-size:0.78em;margin-top:3px">${s.trades} trades · ${sWr}% win</div></div>`;
+      }).join('');
+    } else {
+      $('strategy-grid').innerHTML = '<div style="color:#484f58;font-size:0.82em">No settled trades yet.</div>';
+    }
+
+    const pos = summary.open_positions || [];
+    $('positions').innerHTML = pos.length
+      ? pos.map(p => `<tr><td><code>${p.ticker}</code></td><td>${p.side.toUpperCase()}</td><td>${p.qty}</td><td>$${Number(p.cost).toFixed(2)}</td></tr>`).join('')
+      : '<tr><td colspan="4" style="color:#484f58">None</td></tr>';
+
+    $('symbol-stats').innerHTML = (symbolStats || []).map(s => {
+      const wr = s.trades ? ((s.wins / s.trades) * 100).toFixed(0) : '0';
+      const wrCls = s.trades && (s.wins / s.trades) >= 0.5 ? 'pos' : 'neg';
+      return `<tr><td><strong>${s.symbol}</strong></td><td>${s.trades}</td><td class="pos">${s.wins || 0}</td><td class="neg">${s.losses || 0}</td><td class="${wrCls}">${wr}%</td><td>${fmtPnl(s.avg_pnl)}</td><td>${fmtPnl(s.total_pnl)}</td><td style="color:#f85149">$${fmt2(s.total_fees)}</td></tr>`;
+    }).join('') || '<tr><td colspan="8" style="color:#484f58">No settled trades yet</td></tr>';
+
+    renderAnalyses(windows);
+
+    $('windows').innerHTML = (windows || []).map(w => {
+      const openT = shortTime(w.window_open);
+      const closeT = shortTime(w.window_close);
+      const resBadge = w.result === 'up' ? '<span class="badge badge-up">UP</span>' : '<span class="badge badge-down">DOWN</span>';
+      return `<tr><td>${openT}–${closeT}</td><td>${w.symbol}</td><td>$${Number(w.open_price).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>$${Number(w.close_price).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${fmtPct(w.price_change_pct)}</td><td>${resBadge}</td><td>${w.signals_count}</td><td>${w.trades_count}</td><td>${fmtPnl(w.paper_pnl)}</td></tr>`;
+    }).join('') || '<tr><td colspan="9" style="color:#484f58">No completed windows yet</td></tr>';
+
+    $('signals').innerHTML = (signals || []).map(s => {
+      const ts = toESTFull(s.timestamp);
+      let badgeCls = 'badge-skip';
+      if (s.action === 'trade') badgeCls = 'badge-trade';
+      if (s.action === 'paper_trade') badgeCls = 'badge-paper';
+      const edge = (Number(s.net_edge) * 100).toFixed(1);
+      return `<tr><td>${ts}</td><td><span class="badge ${badgeCls}">${s.action}</span></td><td>${s.strategy.replace('_',' ')}</td><td><code>${s.ticker.slice(-12)}</code></td><td>${s.side.toUpperCase()}</td><td>${edge}%</td><td>${s.seconds_remaining}s</td></tr>`;
+    }).join('') || '<tr><td colspan="7" style="color:#484f58">No signals</td></tr>';
+
+    $('trades').innerHTML = (trades || []).map(t => {
+      const tm = toESTFull(t.timestamp);
+      const fees = t.fees != null ? `$${Number(t.fees).toFixed(2)}` : '—';
+      return `<tr><td>${tm}</td><td><code>${t.ticker.slice(-12)}</code></td><td>${t.side.toUpperCase()}</td><td>${t.contracts}</td><td>$${t.price}</td><td>${(Number(t.net_edge)*100).toFixed(1)}%</td><td style="color:#f85149">${fees}</td><td>${fmtPnl(t.pnl)}</td></tr>`;
+    }).join('') || '<tr><td colspan="8" style="color:#484f58">No trades</td></tr>';
+
+    const nowEST = new Date().toLocaleTimeString('en-US', { timeZone: TZ, hour12: false });
+    $('refresh').innerHTML = '<span class="status-dot dot-live"></span> ' + nowEST + ' EST';
+  } catch (e) {
+    $('refresh').innerHTML = '<span class="status-dot dot-err"></span> ' + e.message;
+  }
+}
+
+connectSSE();
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>

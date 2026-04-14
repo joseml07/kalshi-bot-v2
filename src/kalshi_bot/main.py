@@ -29,6 +29,7 @@ from kalshi_bot.alerts.telegram import (
     make_set_command,
     make_signals_command,
     make_stats_command,
+    make_maker_command,
     make_status_command,
     make_symbols_command,
     make_trades_command,
@@ -86,6 +87,7 @@ def _register_commands(
     alerter.register("kill", make_kill_command())
     alerter.register("resume", make_resume_command())
     alerter.register("stats", make_stats_command())
+    alerter.register("maker", make_maker_command())
     alerter.register("signals", make_signals_command())
     alerter.register("analysis", make_analysis_command())
     alerter.register("window", make_window_command(tracker))
