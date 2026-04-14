@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Kalshi V2 — Momentum Command Center</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 :root {
   --bg: #070a12;
@@ -26,125 +27,100 @@ body {
     var(--bg);
   color: var(--txt);
   min-height: 100vh;
-  padding: 22px;
+  padding: 20px;
 }
-.container { max-width: 1320px; margin: 0 auto; }
+.container { max-width: 1380px; margin: 0 auto; }
 header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 14px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0));
-  backdrop-filter: blur(8px);
 }
-.brand h1 { font-size: 1.15rem; letter-spacing: 0.2px; }
+.brand h1 { font-size: 1.15rem; }
 .brand p { color: var(--muted); font-size: 0.82rem; margin-top: 3px; }
-.badges { display: flex; flex-wrap: wrap; gap: 8px; }
-.badge {
-  border: 1px solid var(--line);
-  background: var(--panel);
-  border-radius: 999px;
-  padding: 6px 10px;
-  font-size: 0.76rem;
-  color: var(--muted);
-}
+.badges { display: flex; gap: 8px; flex-wrap: wrap; }
+.badge { border:1px solid var(--line); background:var(--panel); border-radius:999px; padding:6px 10px; font-size:0.76rem; color:var(--muted); }
 .badge strong { color: var(--txt); }
 .pulse { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
-.live { background: var(--green); box-shadow: 0 0 0 0 rgba(63,185,80,0.6); animation: pulse 1.8s infinite; }
+.live { background: var(--green); }
 .idle { background: var(--amber); }
 .err { background: var(--red); }
-@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(63,185,80,0.6);} 70% { box-shadow: 0 0 0 8px rgba(63,185,80,0);} 100% { box-shadow: 0 0 0 0 rgba(63,185,80,0);} }
 
-.top-controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.tabs { display:flex; gap:8px; margin-bottom:12px; flex-wrap: wrap; }
+.tabbtn {
+  border:1px solid var(--line); background:var(--panel);
+  color:var(--muted); border-radius:10px; padding:8px 12px; cursor:pointer; font-size:.82rem;
+}
+.tabbtn.active { color:var(--txt); border-color:var(--blue); background:#1a2440; }
+
+.sub-controls { display:flex; gap:8px; margin-bottom:10px; }
 .btn {
-  border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--muted);
-  border-radius: 10px;
-  padding: 8px 12px;
-  font-size: 0.8rem;
-  cursor: pointer;
+  border:1px solid var(--line); background:var(--panel);
+  color:var(--muted); border-radius:10px; padding:8px 12px; cursor:pointer; font-size:.8rem;
 }
-.btn.active { color: var(--txt); border-color: var(--blue); background: #1a2440; }
+.btn.active { color:var(--txt); border-color:var(--blue); background:#1a2440; }
 
-.grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
-.card {
-  grid-column: span 3;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 13px;
-}
-.card .k { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-.card .v { font-size: 1.3rem; margin-top: 5px; font-weight: 700; }
+.tab { display:none; }
+.tab.active { display:block; }
+
+.grid { display:grid; grid-template-columns:repeat(12,1fr); gap:12px; }
+.card { grid-column: span 3; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:13px; }
+.card .k { font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+.card .v { font-size:1.26rem; margin-top:5px; font-weight:700; }
 .pos { color: var(--green); }
 .neg { color: var(--red); }
 
-.section {
-  margin-top: 14px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  overflow: hidden;
-}
+.section { margin-top:12px; background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
 .section h2 {
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--muted);
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel-2);
+  font-size:.84rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted);
+  padding:10px 12px; border-bottom:1px solid var(--line); background:var(--panel-2);
 }
-.section .body { padding: 10px; }
+.section .body { padding:10px; }
 
-.live-grid { display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 10px; }
-.symbol {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 11px;
-  background: #101a2d;
-}
-.symbol .name { color: var(--muted); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.08em; }
-.symbol .price { font-size: 1.45rem; margin-top: 4px; }
-.symbol .meta { display: flex; gap: 9px; flex-wrap: wrap; color: var(--muted); font-size: 0.78rem; margin-top: 4px; }
-.progress { height: 6px; border-radius: 999px; background: #1f2941; margin-top: 9px; overflow: hidden; }
-.progress > span { display: block; height: 100%; background: var(--blue); }
+.live-grid { display:grid; grid-template-columns:repeat(3,minmax(220px,1fr)); gap:10px; }
+.symbol { border:1px solid var(--line); border-radius:12px; padding:11px; background:#101a2d; }
+.symbol .name { color:var(--muted); font-size:.74rem; text-transform:uppercase; letter-spacing:.08em; }
+.symbol .price { font-size:1.45rem; margin-top:4px; }
+.symbol .meta { display:flex; gap:9px; flex-wrap:wrap; color:var(--muted); font-size:.78rem; margin-top:4px; }
+.progress { height:6px; border-radius:999px; background:#1f2941; margin-top:9px; overflow:hidden; }
+.progress > span { display:block; height:100%; background:var(--blue); }
 
-.table-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
-th, td { padding: 8px 10px; border-bottom: 1px solid #202942; text-align: left; white-space: nowrap; }
-th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
-tr:hover td { background: #131e36; }
+.table-wrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-size:.82rem; }
+th, td { padding:8px 10px; border-bottom:1px solid #202942; text-align:left; white-space:nowrap; }
+th { color:var(--muted); font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; }
+tr:hover td { background:#131e36; }
+.clickable { cursor:pointer; }
 
-.two-col { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; }
-.chart-shell { border: 1px solid var(--line); border-radius: 12px; padding: 8px; background: #101a2d; }
-svg { width: 100%; height: 170px; }
+.two-col { display:grid; grid-template-columns:1.2fr 1fr; gap:12px; }
+.chart-shell { border:1px solid var(--line); border-radius:12px; padding:8px; background:#101a2d; }
+.chart-wrap { height: 260px; }
+.chart-wrap canvas { width:100% !important; height:100% !important; }
 
-.route-row { display: flex; gap: 8px; flex-wrap: wrap; }
-.pill {
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 0.73rem;
-  color: var(--muted);
-  background: #101a2d;
+.route-row { display:flex; gap:8px; flex-wrap:wrap; }
+.pill { border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-size:.73rem; color:var(--muted); background:#101a2d; }
+
+.panel-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+pre.code {
+  background:#0b1220; border:1px solid var(--line); border-radius:10px; padding:10px;
+  white-space:pre-wrap; font-size:.78rem; color:#cdd8fb;
 }
 
-.footer-note { color: var(--muted); font-size: 0.74rem; margin-top: 10px; }
+.footer-note { color:var(--muted); font-size:.74rem; margin-top:10px; }
 
-@media (max-width: 1050px) {
+@media (max-width: 1150px) {
   .card { grid-column: span 6; }
-  .live-grid { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
-  .two-col { grid-template-columns: 1fr; }
+  .two-col, .panel-grid { grid-template-columns:1fr; }
+  .live-grid { grid-template-columns:repeat(2,minmax(220px,1fr)); }
 }
-@media (max-width: 720px) {
+@media (max-width: 760px) {
   .card { grid-column: span 12; }
-  .live-grid { grid-template-columns: 1fr; }
+  .live-grid { grid-template-columns:1fr; }
 }
 </style>
 </head>
@@ -153,7 +129,7 @@ svg { width: 100%; height: 170px; }
   <header>
     <div class="brand">
       <h1>Kalshi V2 — Momentum Command Center</h1>
-      <p>Live market telemetry, strategy performance, and execution routing.</p>
+      <p>Phase 13 view: WebSocket live feed, interactive analytics, trade detail panel.</p>
     </div>
     <div class="badges">
       <span class="badge"><span id="statusDot" class="pulse idle"></span><strong id="statusText">connecting</strong></span>
@@ -162,76 +138,138 @@ svg { width: 100%; height: 170px; }
     </div>
   </header>
 
-  <div class="top-controls">
+  <div class="tabs">
+    <button class="tabbtn active" data-tab="live">Live</button>
+    <button class="tabbtn" data-tab="performance">Performance</button>
+    <button class="tabbtn" data-tab="trades">Trades</button>
+    <button class="tabbtn" data-tab="analysis">Analysis</button>
+    <button class="tabbtn" data-tab="risk">Risk</button>
+  </div>
+
+  <div class="sub-controls">
     <button class="btn active" id="btnSession">Session</button>
     <button class="btn" id="btnAll">All-time</button>
   </div>
 
-  <div class="grid" id="kpiCards"></div>
-
-  <section class="section">
-    <h2>Live windows</h2>
-    <div class="body"><div id="liveGrid" class="live-grid"><div class="footer-note">Awaiting live state…</div></div></div>
+  <section id="tab-live" class="tab active">
+    <div class="grid" id="kpiCards"></div>
+    <section class="section">
+      <h2>Active windows</h2>
+      <div class="body"><div id="liveGrid" class="live-grid"><div class="footer-note">Awaiting live state…</div></div></div>
+    </section>
   </section>
 
-  <div class="two-col">
+  <section id="tab-performance" class="tab">
+    <div class="two-col">
+      <section class="section">
+        <h2>Cumulative P&amp;L (interactive)</h2>
+        <div class="body">
+          <div class="chart-shell chart-wrap"><canvas id="pnlChart"></canvas></div>
+        </div>
+      </section>
+      <section class="section">
+        <h2>Route breakdown</h2>
+        <div class="body">
+          <div id="routePills" class="route-row"></div>
+          <div class="chart-shell chart-wrap" style="margin-top:8px"><canvas id="routeChart"></canvas></div>
+        </div>
+      </section>
+    </div>
+
+    <div class="two-col" style="margin-top:12px;">
+      <section class="section">
+        <h2>Edge distribution (win/loss)</h2>
+        <div class="body"><div class="chart-shell chart-wrap"><canvas id="edgeHistChart"></canvas></div></div>
+      </section>
+      <section class="section">
+        <h2>Per-symbol P&amp;L</h2>
+        <div class="body"><div class="chart-shell chart-wrap"><canvas id="symbolChart"></canvas></div></div>
+      </section>
+    </div>
+  </section>
+
+  <section id="tab-trades" class="tab">
     <section class="section">
-      <h2>Cumulative P&amp;L</h2>
-      <div class="body">
-        <div class="chart-shell"><svg id="pnlChart" viewBox="0 0 900 170" preserveAspectRatio="none"></svg></div>
-        <div class="footer-note">Cumulative line from settled trades in current view.</div>
+      <h2>Trades (click row for details)</h2>
+      <div class="body table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Time</th><th>Ticker</th><th>Side</th><th>Route</th><th>Qty</th><th>Price</th><th>Net edge</th><th>P&amp;L</th></tr></thead>
+          <tbody id="tradesRows"></tbody>
+        </table>
       </div>
     </section>
 
     <section class="section">
-      <h2>Execution routes</h2>
-      <div class="body">
-        <div id="routePills" class="route-row"></div>
-        <div class="footer-note">Maker/taker/promoted breakdown with win-rate and P&amp;L.</div>
+      <h2>Trade detail panel</h2>
+      <div class="body panel-grid">
+        <div>
+          <h3 style="font-size:.8rem;color:var(--muted);margin-bottom:6px;">Trade + Lifecycle</h3>
+          <pre id="tradeDetail" class="code">Select a trade row…</pre>
+        </div>
+        <div>
+          <h3 style="font-size:.8rem;color:var(--muted);margin-bottom:6px;">Matched Signal Context</h3>
+          <pre id="signalDetail" class="code">Select a trade row…</pre>
+        </div>
       </div>
     </section>
-  </div>
+  </section>
 
-  <section class="section">
-    <h2>Recent trades</h2>
-    <div class="body table-wrap">
-      <table>
-        <thead><tr><th>Time</th><th>Ticker</th><th>Side</th><th>Route</th><th>Qty</th><th>Price</th><th>Net edge</th><th>P&amp;L</th></tr></thead>
-        <tbody id="tradesRows"></tbody>
-      </table>
+  <section id="tab-analysis" class="tab">
+    <section class="section">
+      <h2>Window analyses</h2>
+      <div class="body table-wrap">
+        <table>
+          <thead><tr><th>Window</th><th>Symbol</th><th>Change</th><th>Result</th><th>Signals</th><th>Trades</th><th>P&amp;L</th><th>AI</th></tr></thead>
+          <tbody id="analysisRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+
+  <section id="tab-risk" class="tab">
+    <div class="two-col">
+      <section class="section">
+        <h2>Risk gauges</h2>
+        <div class="body">
+          <div class="route-row">
+            <span class="pill" id="riskDaily">Daily PnL: —</span>
+            <span class="pill" id="riskPos">Open positions: —</span>
+            <span class="pill" id="riskKill">Kill switch: —</span>
+          </div>
+          <div class="chart-shell chart-wrap" style="margin-top:8px"><canvas id="dailyGauge"></canvas></div>
+        </div>
+      </section>
+      <section class="section">
+        <h2>Signals feed</h2>
+        <div class="body table-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Action</th><th>Ticker</th><th>Side</th><th>Edge</th><th>Secs left</th></tr></thead>
+            <tbody id="signalRows"></tbody>
+          </table>
+        </div>
+      </section>
     </div>
   </section>
 
-  <section class="section">
-    <h2>Recent signals</h2>
-    <div class="body table-wrap">
-      <table>
-        <thead><tr><th>Time</th><th>Action</th><th>Strategy</th><th>Ticker</th><th>Side</th><th>Net edge</th><th>Secs left</th></tr></thead>
-        <tbody id="signalRows"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <p class="footer-note">Modernized in Phase 10: cleaner IA, stronger live telemetry focus, and execution route clarity.</p>
+  <p class="footer-note">WebSocket endpoint: <code>/ws/live</code> (SSE fallback retained on backend).</p>
 </div>
 
 <script>
 const TZ = 'America/New_York';
 const $ = id => document.getElementById(id);
 let viewAll = false;
+let charts = {};
 
-function fmtMoney(v){
-  if (v == null) return '—';
-  const n = Number(v);
-  return `${n >= 0 ? '+' : ''}$${n.toFixed(2)}`;
+function fmtMoney(v){ const n=Number(v||0); return `${n>=0?'+':''}$${n.toFixed(2)}`; }
+function clsByVal(v){ const n=Number(v||0); return n>0?'pos':n<0?'neg':''; }
+function toLocal(ts){ if(!ts) return '—'; const s=ts.replace(' ','T'); const d=new Date(s.endsWith('Z')||s.includes('+')?s:s+'Z'); return d.toLocaleTimeString('en-US',{timeZone:TZ,hour12:false}); }
+function jsonPretty(x){ return JSON.stringify(x, null, 2); }
+
+function tabSwitch(name){
+  document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('active', b.dataset.tab===name));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.id===`tab-${name}`));
 }
-function clsByVal(v){ return Number(v) > 0 ? 'pos' : Number(v) < 0 ? 'neg' : ''; }
-function toLocal(ts){
-  if (!ts) return '—';
-  const s = ts.replace(' ', 'T');
-  const d = new Date(s.endsWith('Z') || s.includes('+') ? s : s + 'Z');
-  return d.toLocaleTimeString('en-US', { timeZone: TZ, hour12: false });
-}
+document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>tabSwitch(b.dataset.tab));
 
 function setView(all){
   viewAll = all;
@@ -243,78 +281,143 @@ function setView(all){
 $('btnSession').onclick = () => setView(false);
 $('btnAll').onclick = () => setView(true);
 
+function ensureChart(id, cfg){
+  if(charts[id]) charts[id].destroy();
+  charts[id] = new Chart($(id).getContext('2d'), cfg);
+}
+
 function renderKpis(summary, stats){
-  const cards = [
-    ['Total P&L', fmtMoney(summary.total_pnl || 0), clsByVal(summary.total_pnl || 0)],
-    ['Win rate', `${(((stats.win_rate||0)*100).toFixed(1))}%`, ((stats.win_rate||0)>=0.5 ? 'pos' : 'neg')],
-    ['Trades', `${summary.total_trades || 0}`, ''],
+  const cards=[
+    ['Total P&L', fmtMoney(summary.total_pnl||0), clsByVal(summary.total_pnl||0)],
+    ['Win rate', `${(((stats.win_rate||0)*100).toFixed(1))}%`, ((stats.win_rate||0)>=0.5?'pos':'neg')],
+    ['Trades', `${summary.total_trades||0}`, ''],
     ['Open positions', `${(summary.open_positions||[]).length}`, ''],
-    ['Avg P&L', fmtMoney(stats.avg_pnl || 0), clsByVal(stats.avg_pnl || 0)],
-    ['Fees', `$${Number(stats.total_fees || 0).toFixed(2)}`, 'neg'],
-    ['Best', stats.best_trade ? `$${stats.best_trade.pnl}` : '—', 'pos'],
-    ['Worst', stats.worst_trade ? `$${stats.worst_trade.pnl}` : '—', 'neg'],
+    ['Avg P&L', fmtMoney(stats.avg_pnl||0), clsByVal(stats.avg_pnl||0)],
+    ['Fees', `$${Number(stats.total_fees||0).toFixed(2)}`, 'neg'],
+    ['Best', stats.best_trade?`$${stats.best_trade.pnl}`:'—', 'pos'],
+    ['Worst', stats.worst_trade?`$${stats.worst_trade.pnl}`:'—', 'neg'],
   ];
-  $('kpiCards').innerHTML = cards.map(([k,v,c]) => `<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
+  $('kpiCards').innerHTML = cards.map(([k,v,c])=>`<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
+
+  $('riskDaily').textContent = `Daily PnL: ${fmtMoney(summary.total_pnl||0)}`;
+  $('riskPos').textContent = `Open positions: ${(summary.open_positions||[]).length}`;
+  $('riskKill').textContent = `Kill switch: check /status on bot`; 
 }
 
-function drawChart(points){
-  const svg = $('pnlChart');
-  if (!points.length){
-    svg.innerHTML = '<text x="450" y="86" text-anchor="middle" fill="#8c9bc8">No settled trades yet</text>';
-    return;
-  }
-  let cum=0;
-  const vals=[0,...points.map(p=>{cum += Number(p.pnl||0); return cum;})];
-  const W=820,H=130,L=50,T=10;
-  const min=Math.min(...vals,0), max=Math.max(...vals,0), rng=Math.max(max-min,0.01);
-  const x=i=>L+(i/(vals.length-1))*W;
-  const y=v=>T+H-((v-min)/rng)*H;
-  const poly=vals.map((v,i)=>`${x(i)},${y(v)}`).join(' ');
-  const last=vals[vals.length-1];
-  const color=last>=0?'#3fb950':'#f85149';
-  const base=y(0);
-  svg.innerHTML = `
-    <line x1="${L}" y1="${base}" x2="${L+W}" y2="${base}" stroke="#26304a" />
-    <polyline points="${poly}" fill="none" stroke="${color}" stroke-width="2.5" />
-    <circle cx="${x(vals.length-1)}" cy="${y(last)}" r="3.5" fill="${color}" />
-    <text x="${x(vals.length-1)+8}" y="${y(last)+4}" fill="${color}" font-size="11">${fmtMoney(last)}</text>
-  `;
-}
-
-function renderRoutes(rows){
-  if (!rows.length){ $('routePills').innerHTML = '<span class="pill">No route data</span>'; return; }
-  $('routePills').innerHTML = rows.map(r=>{
-    const t = Number(r.trades || 0);
-    const w = Number(r.wins || 0);
-    const wr = t ? ((w/t)*100).toFixed(0) : '0';
-    const pnl = fmtMoney(r.total_pnl || 0);
-    return `<span class="pill"><strong>${(r.route || 'unknown')}</strong> · ${t} trades · ${wr}% WR · ${pnl}</span>`;
+function renderLive(data){
+  $('statusDot').className = 'pulse live';
+  $('statusText').textContent = 'live';
+  $('updated').textContent = toLocal(data.updated_at);
+  const symbols=data.symbols||{}; const keys=Object.keys(symbols);
+  if(!keys.length){ $('liveGrid').innerHTML='<div class="footer-note">No active windows yet.</div>'; return; }
+  $('liveGrid').innerHTML = keys.map(sym=>{
+    const s=symbols[sym]; const pct=Number(s.price_change_pct||0)*100; const rem=Number(s.seconds_remaining||0);
+    const progress=Math.max(0,Math.min(100,(1-rem/900)*100));
+    return `<div class="symbol"><div class="name">${sym}</div><div class="price">$${Number(s.current_price||0).toLocaleString(undefined,{maximumFractionDigits:2})}</div><div class="meta"><span>Δ <span class="${pct>=0?'pos':'neg'}">${pct>=0?'+':''}${pct.toFixed(3)}%</span></span><span>YES ask: ${s.kalshi_yes_ask!=null?'$'+Number(s.kalshi_yes_ask).toFixed(2):'—'}</span><span>P(up): ${s.model_prob!=null?(Number(s.model_prob)*100).toFixed(1)+'%':'—'}</span></div><div class="progress"><span style="width:${progress}%"></span></div></div>`;
   }).join('');
 }
 
+function renderRoutes(rows){
+  if(!rows.length){ $('routePills').innerHTML='<span class="pill">No route data</span>'; return; }
+  $('routePills').innerHTML = rows.map(r=>{
+    const t=Number(r.trades||0), w=Number(r.wins||0), wr=t?((w/t)*100).toFixed(0):'0';
+    return `<span class="pill"><strong>${r.route||'unknown'}</strong> · ${t} trades · ${wr}% WR · ${fmtMoney(r.total_pnl||0)}</span>`;
+  }).join('');
+
+  ensureChart('routeChart', {
+    type:'bar',
+    data:{
+      labels: rows.map(r=>r.route||'unknown'),
+      datasets:[{label:'Trades', data:rows.map(r=>Number(r.trades||0)), backgroundColor:'#58a6ff'}],
+    },
+    options:{plugins:{legend:{display:false}}, responsive:true, maintainAspectRatio:false}
+  });
+}
+
+function renderPnlChart(pnlRows){
+  let cum=0; const labels=[]; const data=[];
+  pnlRows.forEach((r,i)=>{ cum += Number(r.pnl||0); labels.push(String(i+1)); data.push(cum); });
+  ensureChart('pnlChart', {
+    type:'line',
+    data:{labels, datasets:[{label:'Cumulative PnL', data, borderColor:'#3fb950', pointRadius:0, tension:0.2}]},
+    options:{responsive:true, maintainAspectRatio:false}
+  });
+}
+
+function renderEdgeHistogram(trades){
+  const wins = trades.filter(t=>Number(t.pnl||0)>=0).map(t=>Number(t.net_edge||0)*100);
+  const losses = trades.filter(t=>Number(t.pnl||0)<0).map(t=>Number(t.net_edge||0)*100);
+  const bins = Array.from({length:10}, (_,i)=>i);
+  const binned = arr => bins.map(i=>{
+    const lo=i*2; const hi=lo+2;
+    return arr.filter(v=>v>=lo && v<hi).length;
+  });
+  ensureChart('edgeHistChart', {
+    type:'bar',
+    data:{
+      labels: bins.map(i=>`${i*2}-${i*2+2}%`),
+      datasets:[
+        {label:'Wins', data:binned(wins), backgroundColor:'rgba(63,185,80,0.7)'},
+        {label:'Losses', data:binned(losses), backgroundColor:'rgba(248,81,73,0.7)'}
+      ]
+    },
+    options:{responsive:true, maintainAspectRatio:false}
+  });
+}
+
+function renderSymbolChart(symbolStats){
+  ensureChart('symbolChart', {
+    type:'bar',
+    data:{
+      labels: symbolStats.map(s=>s.symbol),
+      datasets:[{label:'Total PnL', data:symbolStats.map(s=>Number(s.total_pnl||0)), backgroundColor:'#58a6ff'}]
+    },
+    options:{responsive:true, maintainAspectRatio:false}
+  });
+}
+
+function renderDailyGauge(totalPnl){
+  const limit = 20;
+  const used = Math.min(100, Math.max(0, (Math.abs(Number(totalPnl||0))/limit)*100));
+  ensureChart('dailyGauge', {
+    type:'doughnut',
+    data:{labels:['Used','Remaining'], datasets:[{data:[used,100-used], backgroundColor:['#d29922','#26304a']}]},
+    options:{responsive:true, maintainAspectRatio:false, cutout:'70%', plugins:{legend:{display:false}}}
+  });
+}
+
 function renderTrades(rows){
-  if (!rows.length){ $('tradesRows').innerHTML = '<tr><td colspan="8">No trades</td></tr>'; return; }
-  $('tradesRows').innerHTML = rows.slice(0,40).map(t=>`
-    <tr>
+  if(!rows.length){ $('tradesRows').innerHTML='<tr><td colspan="9">No trades</td></tr>'; return; }
+  $('tradesRows').innerHTML = rows.slice(0,100).map(t=>`
+    <tr class="clickable" data-id="${t.id}">
+      <td>${t.id}</td>
       <td>${toLocal(t.timestamp)}</td>
       <td><code>${t.ticker}</code></td>
       <td>${String(t.side||'').toUpperCase()}</td>
-      <td>${t.route || 'taker'}</td>
+      <td>${t.route||'taker'}</td>
       <td>${t.contracts}</td>
       <td>$${t.price}</td>
       <td>${(Number(t.net_edge||0)*100).toFixed(1)}%</td>
-      <td class="${clsByVal(t.pnl)}">${t.pnl == null ? 'pending' : fmtMoney(t.pnl)}</td>
+      <td class="${clsByVal(t.pnl)}">${t.pnl==null?'pending':fmtMoney(t.pnl)}</td>
     </tr>
   `).join('');
+
+  document.querySelectorAll('#tradesRows tr.clickable').forEach(row=>{
+    row.onclick = async () => {
+      const id = row.dataset.id;
+      const detail = await fetch(`/api/trade/${id}`).then(r=>r.json());
+      $('tradeDetail').textContent = jsonPretty(detail.trade || detail);
+      $('signalDetail').textContent = jsonPretty(detail.signal || {});
+    };
+  });
 }
 
 function renderSignals(rows){
-  if (!rows.length){ $('signalRows').innerHTML = '<tr><td colspan="7">No signals</td></tr>'; return; }
-  $('signalRows').innerHTML = rows.slice(0,40).map(s=>`
+  if(!rows.length){ $('signalRows').innerHTML='<tr><td colspan="6">No signals</td></tr>'; return; }
+  $('signalRows').innerHTML = rows.slice(0,80).map(s=>`
     <tr>
       <td>${toLocal(s.timestamp)}</td>
       <td>${s.action}</td>
-      <td>${s.strategy}</td>
       <td><code>${s.ticker}</code></td>
       <td>${String(s.side||'').toUpperCase()}</td>
       <td>${(Number(s.net_edge||0)*100).toFixed(1)}%</td>
@@ -323,64 +426,56 @@ function renderSignals(rows){
   `).join('');
 }
 
-function renderLive(data){
-  $('statusDot').className = 'pulse live';
-  $('statusText').textContent = 'live';
-  $('updated').textContent = toLocal(data.updated_at);
-
-  const symbols = data.symbols || {};
-  const keys = Object.keys(symbols);
-  if (!keys.length){
-    $('liveGrid').innerHTML = '<div class="footer-note">No active windows yet.</div>';
-    return;
-  }
-  $('liveGrid').innerHTML = keys.map(sym=>{
-    const s = symbols[sym];
-    const pct = Number(s.price_change_pct || 0) * 100;
-    const rem = Number(s.seconds_remaining || 0);
-    const progress = Math.max(0, Math.min(100, (1 - rem/900)*100));
-    return `<div class="symbol">
-      <div class="name">${sym}</div>
-      <div class="price">$${Number(s.current_price || 0).toLocaleString(undefined,{maximumFractionDigits:2})}</div>
-      <div class="meta">
-        <span>Δ <span class="${pct>=0?'pos':'neg'}">${pct>=0?'+':''}${pct.toFixed(3)}%</span></span>
-        <span>YES ask: ${s.kalshi_yes_ask != null ? '$'+Number(s.kalshi_yes_ask).toFixed(2) : '—'}</span>
-        <span>P(up): ${s.model_prob != null ? (Number(s.model_prob)*100).toFixed(1)+'%' : '—'}</span>
-      </div>
-      <div class="progress"><span style="width:${progress}%"></span></div>
-    </div>`;
-  }).join('');
+function renderAnalyses(rows){
+  if(!rows.length){ $('analysisRows').innerHTML='<tr><td colspan="8">No analyses yet</td></tr>'; return; }
+  $('analysisRows').innerHTML = rows.map(a=>`
+    <tr>
+      <td>${toLocal(a.window_open)}-${toLocal(a.window_close)}</td>
+      <td>${a.symbol}</td>
+      <td>${(Number(a.price_change_pct||0)*100).toFixed(3)}%</td>
+      <td>${String(a.result||'').toUpperCase()}</td>
+      <td>${a.signals_count}</td>
+      <td>${a.trades_count}</td>
+      <td>${fmtMoney(a.paper_pnl||0)}</td>
+      <td>${a.ai_commentary ? String(a.ai_commentary).slice(0,120) : '—'}</td>
+    </tr>
+  `).join('');
 }
 
 async function loadStatic(){
-  const q = viewAll ? '?all=true' : '';
-  const [summary, stats, pnl, routes, trades, signals] = await Promise.all([
+  const q=viewAll?'?all=true':'';
+  const [summary,stats,pnl,routes,trades,signals,analyses,symbols] = await Promise.all([
     fetch('/api/summary'+q).then(r=>r.json()),
     fetch('/api/stats'+q).then(r=>r.json()),
     fetch('/api/pnl_rolling'+q).then(r=>r.json()),
     fetch('/api/routes'+q).then(r=>r.json()),
-    fetch('/api/trades?limit=80').then(r=>r.json()),
-    fetch('/api/signals?limit=80').then(r=>r.json()),
+    fetch('/api/trades?limit=120').then(r=>r.json()),
+    fetch('/api/signals?limit=120').then(r=>r.json()),
+    fetch('/api/windows?limit=20').then(r=>r.json()),
+    fetch('/api/stats_by_symbol'+q).then(r=>r.json()),
   ]);
-  renderKpis(summary, stats);
-  drawChart(pnl || []);
-  renderRoutes(routes || []);
-  renderTrades(trades || []);
-  renderSignals(signals || []);
+
+  renderKpis(summary,stats);
+  renderPnlChart(pnl||[]);
+  renderRoutes(routes||[]);
+  renderTrades(trades||[]);
+  renderSignals(signals||[]);
+  renderAnalyses(analyses||[]);
+  renderEdgeHistogram((trades||[]).filter(t=>t.pnl!=null));
+  renderSymbolChart(symbols||[]);
+  renderDailyGauge(summary.total_pnl||0);
 }
 
-function connectLive(){
-  const es = new EventSource('/api/live');
-  es.onmessage = ev => {
-    try { renderLive(JSON.parse(ev.data)); } catch (_) {}
-  };
-  es.onerror = () => {
-    $('statusDot').className = 'pulse err';
-    $('statusText').textContent = 'reconnecting';
-  };
+function connectLiveWebSocket(){
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/live`);
+  ws.onopen = ()=>{ $('statusDot').className='pulse live'; $('statusText').textContent='live'; };
+  ws.onmessage = ev=>{ try{ renderLive(JSON.parse(ev.data)); }catch(_){ } };
+  ws.onerror = ()=>{ $('statusDot').className='pulse err'; $('statusText').textContent='ws error'; };
+  ws.onclose = ()=>{ $('statusDot').className='pulse idle'; $('statusText').textContent='reconnecting'; setTimeout(connectLiveWebSocket, 1500); };
 }
 
-connectLive();
+connectLiveWebSocket();
 loadStatic();
 setInterval(loadStatic, 12000);
 </script>

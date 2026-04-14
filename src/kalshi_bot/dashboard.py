@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 
@@ -49,8 +49,8 @@ def _session_start() -> str | None:
 
 
 @app.get("/api/trades")
-def api_trades(limit: int = 50) -> list[dict[str, Any]]:
-    return _query("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,))
+def api_trades(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    return _query("SELECT * FROM trades ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset))
 
 
 @app.get("/api/summary")
@@ -417,6 +417,53 @@ async def api_live() -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.websocket("/ws/live")
+async def ws_live(websocket: WebSocket) -> None:
+    """WebSocket live-state stream for low-latency dashboard updates."""
+    await websocket.accept()
+    live_path = Path("live_state.json")
+    try:
+        while True:
+            try:
+                payload = live_path.read_text(encoding="utf-8") if live_path.exists() else "{}"
+            except Exception:
+                payload = "{}"
+            await websocket.send_text(payload)
+            await asyncio.sleep(2.0)
+    except WebSocketDisconnect:
+        return
+
+
+@app.get("/api/trade/{trade_id}")
+def api_trade_detail(trade_id: int) -> dict[str, Any]:
+    rows = _query("SELECT * FROM trades WHERE id = ? LIMIT 1", (trade_id,))
+    if not rows:
+        return {"found": False}
+    trade = rows[0]
+
+    sig_rows = _query(
+        """SELECT * FROM signals
+           WHERE ticker = ? AND side = ?
+           ORDER BY ABS(strftime('%s', timestamp) - strftime('%s', ?)) ASC
+           LIMIT 1""",
+        (str(trade["ticker"]), str(trade["side"]), str(trade["timestamp"])),
+    )
+    signal = sig_rows[0] if sig_rows else None
+
+    lifecycle = {
+        "placed_at": trade.get("timestamp"),
+        "route": trade.get("route"),
+        "settled": trade.get("pnl") is not None,
+    }
+
+    return {
+        "found": True,
+        "trade": trade,
+        "signal": signal,
+        "lifecycle": lifecycle,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
