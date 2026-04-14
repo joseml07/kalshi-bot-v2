@@ -161,6 +161,19 @@ async def run_bot(settings: Settings) -> None:
     recorder = DataRecorder()
     alerter = _make_alerter(settings)
 
+    logger.info(
+        "alerter_mode_selected",
+        mode=(
+            "discord_bot"
+            if isinstance(alerter, DiscordBotAlerter)
+            else "telegram"
+            if isinstance(alerter, TelegramAlerter)
+            else "discord_webhook"
+            if isinstance(alerter, DiscordWebhookAlerter)
+            else "none"
+        ),
+    )
+
     openrouter: OpenRouterClient | None = None
     if settings.openrouter_api_key:
         openrouter = OpenRouterClient(settings.openrouter_api_key, settings.openrouter_model)
@@ -439,6 +452,12 @@ async def _trade_cycle(
     except Exception:
         logger.warning("balance_fetch_failed")
         bankroll = Decimal("0")
+
+    try:
+        positions = await client.get_positions()
+        risk.sync_positions(positions)
+    except Exception:
+        logger.warning("positions_sync_failed")
 
     active_symbols = {s.strip() for s in settings.symbols.split(",")}
     active_tickers: set[str] = set()
