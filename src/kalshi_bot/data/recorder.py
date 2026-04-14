@@ -33,11 +33,15 @@ class DataRecorder:
 
     def __init__(self, db_path: str = "trades.db") -> None:
         self._db = sqlite3.connect(db_path)
+        self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute("PRAGMA synchronous=NORMAL")
         self._init_tables()
         # Monotonic timestamps for sampling control
         self._last_price: dict[str, float] = {}  # symbol -> mono time
         self._last_ob: dict[str, float] = {}  # ticker -> mono time
         self._last_snapshot: dict[str, float] = {}  # ticker -> mono time
+        self._last_write_mono: float | None = None
+        self._last_write_latency_ms: float | None = None
 
     # ------------------------------------------------------------------
     # Public API — all methods catch exceptions internally
@@ -235,11 +239,26 @@ class DataRecorder:
 
     def _safe_execute(self, sql: str, params: tuple[Any, ...]) -> None:
         """Execute SQL, swallowing errors so the trading loop is never affected."""
+        start = time.perf_counter()
         try:
             self._db.execute(sql, params)
             self._db.commit()
+            self._last_write_mono = time.monotonic()
+            self._last_write_latency_ms = (time.perf_counter() - start) * 1000.0
         except Exception:
             logger.debug("data_recorder_write_failed", exc_info=True)
+
+    @property
+    def last_write_age_s(self) -> float | None:
+        """Seconds since last successful DB write, or None if no writes."""
+        if self._last_write_mono is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_write_mono)
+
+    @property
+    def last_write_latency_ms(self) -> float | None:
+        """Latency of the most recent successful DB write (milliseconds)."""
+        return self._last_write_latency_ms
 
     def _init_tables(self) -> None:
         """Create historical data tables if they don't exist."""

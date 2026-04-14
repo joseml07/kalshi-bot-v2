@@ -7,12 +7,13 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 :root {
-  --bg: #070a12;
-  --panel: #0f1524;
-  --panel-2: #151d31;
-  --line: #26304a;
-  --txt: #d9e3ff;
-  --muted: #8c9bc8;
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel-2: #1f2633;
+  --line: rgba(255,255,255,0.08);
+  --line-soft: rgba(255,255,255,0.05);
+  --txt: #e6edf3;
+  --muted: #9ba7b9;
   --blue: #58a6ff;
   --green: #3fb950;
   --red: #f85149;
@@ -22,8 +23,8 @@
 body {
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   background:
-    radial-gradient(1200px 600px at 10% -10%, #1d2c57 0%, transparent 45%),
-    radial-gradient(900px 500px at 90% -20%, #33206a 0%, transparent 40%),
+    radial-gradient(900px 420px at 10% -5%, rgba(88,166,255,0.12) 0%, transparent 46%),
+    radial-gradient(900px 420px at 95% -8%, rgba(63,185,80,0.07) 0%, transparent 45%),
     var(--bg);
   color: var(--txt);
   min-height: 100vh;
@@ -39,12 +40,13 @@ header {
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0));
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
 }
 .brand h1 { font-size: 1.15rem; }
 .brand p { color: var(--muted); font-size: 0.82rem; margin-top: 3px; }
 .badges { display: flex; gap: 8px; flex-wrap: wrap; }
-.badge { border:1px solid var(--line); background:var(--panel); border-radius:999px; padding:6px 10px; font-size:0.76rem; color:var(--muted); }
+.badge { border:1px solid var(--line-soft); background:var(--panel); border-radius:999px; padding:6px 10px; font-size:0.76rem; color:var(--muted); }
 .badge strong { color: var(--txt); }
 .pulse { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
 .live { background: var(--green); }
@@ -69,13 +71,32 @@ header {
 .tab.active { display:block; }
 
 .grid { display:grid; grid-template-columns:repeat(12,1fr); gap:12px; }
-.card { grid-column: span 3; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:13px; }
+.card {
+  grid-column: span 3;
+  background:var(--panel);
+  border:1px solid var(--line-soft);
+  border-radius:14px;
+  padding:13px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
+}
+.card.hero {
+  grid-column: span 6;
+  border-color: rgba(88,166,255,0.28);
+}
+.card.hero.pnl-pos { box-shadow: 0 0 80px rgba(63,185,80,0.10), inset 0 1px 0 rgba(255,255,255,0.03); }
+.card.hero.pnl-neg { box-shadow: 0 0 80px rgba(248,81,73,0.10), inset 0 1px 0 rgba(255,255,255,0.03); }
 .card .k { font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
-.card .v { font-size:1.26rem; margin-top:5px; font-weight:700; }
+.card .v {
+  font-size:1.26rem;
+  margin-top:5px;
+  font-weight:700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+}
+.card .micro { margin-top:6px; font-size:.74rem; color:var(--muted); }
 .pos { color: var(--green); }
 .neg { color: var(--red); }
 
-.section { margin-top:12px; background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+.section { margin-top:12px; background:var(--panel); border:1px solid var(--line-soft); border-radius:14px; overflow:hidden; }
 .section h2 {
   font-size:.84rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted);
   padding:10px 12px; border-bottom:1px solid var(--line); background:var(--panel-2);
@@ -83,7 +104,7 @@ header {
 .section .body { padding:10px; }
 
 .live-grid { display:grid; grid-template-columns:repeat(3,minmax(220px,1fr)); gap:10px; }
-.symbol { border:1px solid var(--line); border-radius:12px; padding:11px; background:#101a2d; }
+.symbol { border:1px solid var(--line-soft); border-radius:12px; padding:11px; background:#111924; }
 .symbol .name { color:var(--muted); font-size:.74rem; text-transform:uppercase; letter-spacing:.08em; }
 .symbol .price { font-size:1.45rem; margin-top:4px; }
 .symbol .meta { display:flex; gap:9px; flex-wrap:wrap; color:var(--muted); font-size:.78rem; margin-top:4px; }
@@ -98,12 +119,12 @@ tr:hover td { background:#131e36; }
 .clickable { cursor:pointer; }
 
 .two-col { display:grid; grid-template-columns:1.2fr 1fr; gap:12px; }
-.chart-shell { border:1px solid var(--line); border-radius:12px; padding:8px; background:#101a2d; }
+.chart-shell { border:1px solid var(--line-soft); border-radius:12px; padding:8px; background:#111924; }
 .chart-wrap { height: 260px; }
 .chart-wrap canvas { width:100% !important; height:100% !important; }
 
 .route-row { display:flex; gap:8px; flex-wrap:wrap; }
-.pill { border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-size:.73rem; color:var(--muted); background:#101a2d; }
+.pill { border:1px solid var(--line-soft); border-radius:999px; padding:4px 10px; font-size:.73rem; color:var(--muted); background:#111924; }
 
 .panel-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
 pre.code {
@@ -287,19 +308,32 @@ function ensureChart(id, cfg){
 }
 
 function renderKpis(summary, stats){
-  const cards=[
-    ['Total P&L', fmtMoney(summary.total_pnl||0), clsByVal(summary.total_pnl||0)],
-    ['Win rate', `${(((stats.win_rate||0)*100).toFixed(1))}%`, ((stats.win_rate||0)>=0.5?'pos':'neg')],
-    ['Trades', `${summary.total_trades||0}`, ''],
-    ['Open positions', `${(summary.open_positions||[]).length}`, ''],
-    ['Avg P&L', fmtMoney(stats.avg_pnl||0), clsByVal(stats.avg_pnl||0)],
-    ['Fees', `$${Number(stats.total_fees||0).toFixed(2)}`, 'neg'],
-    ['Best', stats.best_trade?`$${stats.best_trade.pnl}`:'—', 'pos'],
-    ['Worst', stats.worst_trade?`$${stats.worst_trade.pnl}`:'—', 'neg'],
-  ];
-  $('kpiCards').innerHTML = cards.map(([k,v,c])=>`<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
+  const wins = Number(summary.wins || 0);
+  const losses = Number(summary.losses || 0);
+  const totalTrades = Number(summary.total_trades || 0);
+  const pnl = Number(summary.total_pnl || 0);
+  const pnlCls = clsByVal(pnl);
+  const pnlHero = `
+    <div class="card hero ${pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">
+      <div class="k">Total P&L</div>
+      <div class="v ${pnlCls}">${fmtMoney(pnl)}</div>
+      <div class="micro">${wins} Wins • ${losses} Losses • ${totalTrades} Trades</div>
+    </div>`;
 
-  $('riskDaily').textContent = `Daily PnL: ${fmtMoney(summary.total_pnl||0)}`;
+  const wr = Number((stats.win_rate||0) * 100);
+  const wrCls = (stats.win_rate||0)>=0.5 ? 'pos' : 'neg';
+
+  const cards=[
+    ['Win rate', `${wr.toFixed(1)}%`, wrCls, `${wins}W • ${losses}L`],
+    ['Open positions', `${(summary.open_positions||[]).length}`, '', `${(summary.total_in_positions||0).toFixed(2)}$ in market`],
+    ['Avg P&L', fmtMoney(stats.avg_pnl||0), clsByVal(stats.avg_pnl||0), 'Per settled trade'],
+    ['Fees', `$${Number(stats.total_fees||0).toFixed(2)}`, 'neg', 'Session accumulated'],
+    ['Best', stats.best_trade?fmtMoney(stats.best_trade.pnl):'—', 'pos', stats.best_trade?String(stats.best_trade.ticker):'No data'],
+    ['Worst', stats.worst_trade?fmtMoney(stats.worst_trade.pnl):'—', 'neg', stats.worst_trade?String(stats.worst_trade.ticker):'No data'],
+  ];
+  $('kpiCards').innerHTML = pnlHero + cards.map(([k,v,c,m])=>`<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div><div class="micro">${m}</div></div>`).join('');
+
+  $('riskDaily').textContent = `Daily PnL: ${fmtMoney(pnl)}`;
   $('riskPos').textContent = `Open positions: ${(summary.open_positions||[]).length}`;
   $('riskKill').textContent = `Kill switch: check /status on bot`; 
 }
@@ -309,7 +343,7 @@ function renderLive(data){
   $('statusText').textContent = 'live';
   $('updated').textContent = toLocal(data.updated_at);
   const symbols=data.symbols||{}; const keys=Object.keys(symbols);
-  if(!keys.length){ $('liveGrid').innerHTML='<div class="footer-note">No active windows yet.</div>'; return; }
+  if(!keys.length){ $('liveGrid').innerHTML='<div class="symbol"><div class="name">No active windows</div><div class="price">—</div><div class="meta"><span>Waiting for market momentum…</span></div><div class="progress"><span style="width:12%;opacity:.3"></span></div></div>'; return; }
   $('liveGrid').innerHTML = keys.map(sym=>{
     const s=symbols[sym]; const pct=Number(s.price_change_pct||0)*100; const rem=Number(s.seconds_remaining||0);
     const progress=Math.max(0,Math.min(100,(1-rem/900)*100));
@@ -337,9 +371,20 @@ function renderRoutes(rows){
 function renderPnlChart(pnlRows){
   let cum=0; const labels=[]; const data=[];
   pnlRows.forEach((r,i)=>{ cum += Number(r.pnl||0); labels.push(String(i+1)); data.push(cum); });
+  const last = data.length ? data[data.length-1] : 0;
+  const line = last >= 0 ? '#3fb950' : '#f85149';
+  const gradCtx = $('pnlChart').getContext('2d');
+  const grad = gradCtx.createLinearGradient(0,0,0,260);
+  if (last >= 0) {
+    grad.addColorStop(0,'rgba(63,185,80,0.32)');
+    grad.addColorStop(1,'rgba(63,185,80,0.02)');
+  } else {
+    grad.addColorStop(0,'rgba(248,81,73,0.30)');
+    grad.addColorStop(1,'rgba(248,81,73,0.02)');
+  }
   ensureChart('pnlChart', {
     type:'line',
-    data:{labels, datasets:[{label:'Cumulative PnL', data, borderColor:'#3fb950', pointRadius:0, tension:0.2}]},
+    data:{labels, datasets:[{label:'Cumulative PnL', data, borderColor:line, backgroundColor:grad, fill:true, pointRadius:0, tension:0.2}]},
     options:{responsive:true, maintainAspectRatio:false}
   });
 }

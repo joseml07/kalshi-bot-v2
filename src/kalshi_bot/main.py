@@ -149,6 +149,40 @@ def _register_discord_commands(
     alerter.register_default_slash_commands()
 
 
+async def _emit_feed_health_alerts(
+    *,
+    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
+    coinbase_age: float | None,
+    kalshi_age: float | None,
+    threshold_s: float = 30.0,
+    sent_state: dict[str, bool],
+) -> None:
+    if alerter is None:
+        return
+
+    async def _send_once(key: str, message: str, is_stale: bool) -> None:
+        already_sent = sent_state.get(key, False)
+        if is_stale and not already_sent:
+            sent_state[key] = True
+            # Reuse generic alert hook via exit-style text for consistency
+            await alerter.trade_exited("SYSTEM", key, 0, message)
+        if (not is_stale) and already_sent:
+            sent_state[key] = False
+
+    if coinbase_age is not None:
+        await _send_once(
+            "coinbase_feed",
+            f"Coinbase feed stale: {coinbase_age:.1f}s since last tick",
+            coinbase_age > threshold_s,
+        )
+    if kalshi_age is not None:
+        await _send_once(
+            "kalshi_ws",
+            f"Kalshi WS stale: {kalshi_age:.1f}s since last update",
+            kalshi_age > threshold_s,
+        )
+
+
 async def run_bot(settings: Settings) -> None:
     dry_run = settings.trading_mode == "paper"
     if dry_run:
@@ -223,6 +257,7 @@ async def run_bot(settings: Settings) -> None:
                 alerter,
                 openrouter,
                 recorder,
+                feed=feed,
                 ws_feed=ws_feed,
             )
         )
@@ -283,10 +318,12 @@ async def _poll_and_trade(
     alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
     openrouter: OpenRouterClient | None,
     recorder: DataRecorder | None = None,
+    feed: CoinbaseFeed | None = None,
     ws_feed: KalshiOrderbookFeed | None = None,
 ) -> None:
     last_risk_block: dict[str, str] = {}
     last_analysis_time: dict[str, datetime] = {}
+    stale_alert_state: dict[str, bool] = {}
     while not shutdown.is_set():
         try:
             await _trade_cycle(
@@ -299,8 +336,10 @@ async def _poll_and_trade(
                 openrouter,
                 last_risk_block,
                 recorder,
+                feed=feed,
                 ws_feed=ws_feed,
                 last_analysis_time=last_analysis_time,
+                stale_alert_state=stale_alert_state,
             )
         except RiskVetoError as exc:
             logger.info("risk_veto", reason=str(exc))
@@ -428,14 +467,17 @@ async def _trade_cycle(
     openrouter: OpenRouterClient | None = None,
     last_risk_block: dict[str, str] | None = None,
     recorder: DataRecorder | None = None,
+    feed: CoinbaseFeed | None = None,
     ws_feed: KalshiOrderbookFeed | None = None,
     last_analysis_time: dict[str, datetime] | None = None,
+    stale_alert_state: dict[str, bool] | None = None,
 ) -> None:
     live_state: dict[str, Any] = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "daily_pnl": float(risk.daily_pnl),
         "open_positions": risk.open_position_count,
         "symbols": {},
+        "health": {},
     }
 
     await executor.check_pending_fills()
@@ -458,6 +500,31 @@ async def _trade_cycle(
         risk.sync_positions(positions)
     except Exception:
         logger.warning("positions_sync_failed")
+
+    util = client.api_utilization()
+    coinbase_age = feed.last_tick_age_s if feed is not None else None
+    kalshi_age = ws_feed.last_update_age_s if ws_feed is not None else None
+    db_age = recorder.last_write_age_s if recorder is not None else None
+    db_latency = recorder.last_write_latency_ms if recorder is not None else None
+
+    live_state["health"] = {
+        "coinbase_last_tick_age_s": coinbase_age,
+        "kalshi_ws_last_update_age_s": kalshi_age,
+        "db_last_write_age_s": db_age,
+        "db_last_write_latency_ms": db_latency,
+        "api_read_per_sec": util["read_per_sec"],
+        "api_write_per_sec": util["write_per_sec"],
+        "api_read_utilization": util["read_utilization"],
+        "api_write_utilization": util["write_utilization"],
+    }
+
+    if stale_alert_state is not None:
+        await _emit_feed_health_alerts(
+            alerter=alerter,
+            coinbase_age=coinbase_age,
+            kalshi_age=kalshi_age,
+            sent_state=stale_alert_state,
+        )
 
     active_symbols = {s.strip() for s in settings.symbols.split(",")}
     active_tickers: set[str] = set()

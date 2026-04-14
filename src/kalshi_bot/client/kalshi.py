@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections import deque
 from decimal import Decimal
 from typing import Any
 
@@ -52,6 +53,8 @@ class KalshiClient:
         self._read_limiter = RateLimiter(rate=20, burst=20)
         self._write_limiter = RateLimiter(rate=10, burst=10)
         self._client = httpx.AsyncClient(timeout=10.0)
+        self._read_calls_recent: deque[float] = deque()
+        self._write_calls_recent: deque[float] = deque()
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -78,6 +81,10 @@ class KalshiClient:
 
         for attempt in range(3):
             await limiter.acquire()
+            if is_write:
+                self._record_write_call()
+            else:
+                self._record_read_call()
             headers = self._auth_headers(method, f"/trade-api/v2{path}")
             resp = await self._client.request(
                 method, url, headers=headers, params=params, json=json_body
@@ -203,6 +210,38 @@ class KalshiClient:
     async def cancel_order(self, order_id: str) -> None:
         """Cancel an open order."""
         await self._request("DELETE", f"/portfolio/orders/{order_id}", is_write=True)
+
+    def _trim_calls(self, bucket: deque[float], window_s: float) -> None:
+        now = time.monotonic()
+        while bucket and (now - bucket[0]) > window_s:
+            bucket.popleft()
+
+    def _record_read_call(self) -> None:
+        self._read_calls_recent.append(time.monotonic())
+        self._trim_calls(self._read_calls_recent, 60.0)
+
+    def _record_write_call(self) -> None:
+        self._write_calls_recent.append(time.monotonic())
+        self._trim_calls(self._write_calls_recent, 60.0)
+
+    def api_utilization(self) -> dict[str, float]:
+        """Approximate read/write utilization vs configured limits.
+
+        Returns values in [0, 1+] where 1.0 means at configured limit.
+        """
+        self._trim_calls(self._read_calls_recent, 1.0)
+        read_per_sec = float(len(self._read_calls_recent))
+        self._trim_calls(self._write_calls_recent, 1.0)
+        write_per_sec = float(len(self._write_calls_recent))
+
+        read_util = read_per_sec / 20.0
+        write_util = write_per_sec / 10.0
+        return {
+            "read_per_sec": read_per_sec,
+            "write_per_sec": write_per_sec,
+            "read_utilization": read_util,
+            "write_utilization": write_util,
+        }
 
 
 def _parse_market(data: dict[str, Any]) -> Market:

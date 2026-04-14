@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -101,6 +102,7 @@ class KalshiOrderbookFeed:
 
         # Signals _stream_loop that _tickers changed and a resubscribe is needed.
         self._resubscribe_event = asyncio.Event()
+        self._last_update_mono: float | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -283,6 +285,7 @@ class KalshiOrderbookFeed:
             no=no_map,
             updated_at=datetime.now(timezone.utc),
         )
+        self._last_update_mono = time.monotonic()
         logger.debug(
             "kalshi_ws_snapshot ticker=%s yes_levels=%d no_levels=%d",
             ticker,
@@ -328,3 +331,11 @@ class KalshiOrderbookFeed:
             book[price_cents] = new_qty
 
         state.updated_at = datetime.now(timezone.utc)
+        self._last_update_mono = time.monotonic()
+
+    @property
+    def last_update_age_s(self) -> float | None:
+        """Seconds since last Kalshi WS book update, or None if none seen."""
+        if self._last_update_mono is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_update_mono)

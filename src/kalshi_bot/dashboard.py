@@ -252,6 +252,22 @@ def api_health() -> dict[str, Any]:
             result[table]["count"] = rows[0]["cnt"] if rows else 0
         except Exception:
             result.setdefault(table, {})["count"] = 0
+
+    # Added for phase-14 observability: pull runtime telemetry from live_state.json
+    live_path = Path("live_state.json")
+    runtime: dict[str, Any] = {}
+    with contextlib.suppress(Exception):
+        if live_path.exists():
+            runtime = json.loads(live_path.read_text(encoding="utf-8"))
+
+    result["runtime"] = {
+        "coinbase_last_tick_age_s": runtime.get("health", {}).get("coinbase_last_tick_age_s"),
+        "kalshi_ws_last_update_age_s": runtime.get("health", {}).get("kalshi_ws_last_update_age_s"),
+        "db_last_write_age_s": runtime.get("health", {}).get("db_last_write_age_s"),
+        "db_last_write_latency_ms": runtime.get("health", {}).get("db_last_write_latency_ms"),
+        "api_read_utilization": runtime.get("health", {}).get("api_read_utilization"),
+        "api_write_utilization": runtime.get("health", {}).get("api_write_utilization"),
+    }
     return result
 
 

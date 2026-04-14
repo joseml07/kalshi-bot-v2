@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -38,6 +39,7 @@ class CoinbaseFeed:
         self._products = products or PRODUCTS
         self._running = False
         self._ws: WebSocketClientProtocol | None = None
+        self._last_tick_mono: float | None = None
 
     async def start(self) -> None:
         """Start the feed. Reconnects automatically on failure."""
@@ -99,6 +101,7 @@ class CoinbaseFeed:
                     price=float(price_str),
                     timestamp=datetime.fromisoformat(time_str.replace("Z", "+00:00")),
                 )
+                self._last_tick_mono = time.monotonic()
                 try:
                     self._queue.put_nowait(tick)
                 except asyncio.QueueFull:
@@ -106,3 +109,10 @@ class CoinbaseFeed:
                     with contextlib.suppress(asyncio.QueueEmpty):
                         self._queue.get_nowait()
                     self._queue.put_nowait(tick)
+
+    @property
+    def last_tick_age_s(self) -> float | None:
+        """Seconds since last Coinbase tick, or None if never."""
+        if self._last_tick_mono is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_tick_mono)
