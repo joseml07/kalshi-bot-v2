@@ -1,12 +1,448 @@
-"""Temporary executor stub for phase 1 imports."""
+"""Order executor — place, track, cancel, and log orders."""
 
 from __future__ import annotations
 
+import contextlib
+import logging
+import sqlite3
+import time
+from datetime import datetime, timezone
+from decimal import Decimal
+from enum import Enum
+
+from kalshi_bot.client.kalshi import KalshiClient
+from kalshi_bot.risk.manager import RiskManager
+from kalshi_bot.risk.sizing import quarter_kelly_size
+from kalshi_bot.strategy.fees import taker_fee
+from kalshi_bot.strategy.signals import Signal
+
+logger = logging.getLogger(__name__)
+
+ORDER_TIMEOUT_SECONDS = 60
 DB_PATH = "trades.db"
 
 
+class OrderState(str, Enum):
+    """Lifecycle state of a tracked order."""
+
+    PENDING = "pending"
+    FILLED = "filled"
+    CANCELLED = "cancelled"
+    SETTLED = "settled"
+
+
+class TrackedOrder:
+    """An order being managed by the executor."""
+
+    def __init__(
+        self,
+        signal: Signal,
+        order_id: str,
+        contracts: int,
+        price: Decimal,
+    ) -> None:
+        self.signal = signal
+        self.order_id = order_id
+        self.contracts = contracts
+        self.price = price
+        self.state = OrderState.PENDING
+        self.placed_at = time.monotonic()
+        self.fill_time: float | None = None
+        self.pnl: Decimal | None = None
+        self.negative_edge_count: int = 0
+        self.timeout: int = 20 if signal.seconds_remaining < 120 else ORDER_TIMEOUT_SECONDS
+        self.route: str = signal.route if hasattr(signal, "route") else "taker"
+        self.taker_price: Decimal | None = getattr(signal, "taker_price", None)
+        self.maker_timeout: int = 90
+
+
 class Executor:
-    """Minimal executor interface used by phase 1 modules."""
+    """Manages order lifecycle: place, monitor, cancel stale, log."""
+
+    def __init__(
+        self,
+        client: KalshiClient,
+        risk: RiskManager,
+        *,
+        dry_run: bool = False,
+        db_path: str = DB_PATH,
+    ) -> None:
+        self._client = client
+        self._risk = risk
+        self._dry_run = dry_run
+        self._orders: dict[str, TrackedOrder] = {}
+        self._db = _init_db(db_path)
+
+    async def submit(self, signal: Signal, bankroll: Decimal) -> TrackedOrder | None:
+        """Size, place, and track an order for the given signal.
+
+        Returns the TrackedOrder on success, or None if sizing returns 0
+        or dry_run is active.
+        """
+        price = float(signal.kalshi_price)
+        win_prob = signal.real_prob if signal.side.value == "yes" else 1 - signal.real_prob
+        contracts = quarter_kelly_size(win_prob, price, bankroll)
+        if contracts == 0:
+            logger.debug("Sizing returned 0 contracts for %s — skipping", signal.ticker)
+            return None
+
+        if self._dry_run:
+            logger.info(
+                "[PAPER] Would place %s %s x%d @ %s on %s (edge=%s)",
+                signal.side.value,
+                signal.ticker,
+                contracts,
+                signal.kalshi_price,
+                signal.strategy.value,
+                signal.net_edge,
+            )
+            order_id = f"PAPER-{int(time.time() * 1000)}"
+            tracked = TrackedOrder(
+                signal=signal,
+                order_id=order_id,
+                contracts=contracts,
+                price=signal.kalshi_price,
+            )
+            tracked.state = OrderState.FILLED
+            tracked.fill_time = time.monotonic()
+            self._orders[order_id] = tracked
+            self._risk.record_fill(signal.ticker, side=signal.side.value)
+            self._log_trade(signal, order_id, contracts, signal.kalshi_price, None)
+            return tracked
+
+        order_resp = await self._client.place_order(
+            ticker=signal.ticker,
+            action="buy",
+            side=signal.side.value,
+            price_dollars=signal.kalshi_price,
+            count=contracts,
+        )
+        order_id = str(order_resp["order_id"])
+        tracked = TrackedOrder(
+            signal=signal,
+            order_id=order_id,
+            contracts=contracts,
+            price=signal.kalshi_price,
+        )
+        self._orders[order_id] = tracked
+        self._log_trade(signal, order_id, contracts, signal.kalshi_price, None)
+        logger.info(
+            "Placed %s %s x%d @ %s order_id=%s",
+            signal.side.value,
+            signal.ticker,
+            contracts,
+            signal.kalshi_price,
+            order_id,
+        )
+        return tracked
+
+    async def check_pending_fills(self) -> None:
+        """Poll Kalshi for pending orders and mark filled ones.
+
+        Only calls record_fill on the risk manager when an order is
+        confirmed filled by the API.
+        """
+        for oid, order in list(self._orders.items()):
+            if order.state != OrderState.PENDING:
+                continue
+            if oid.startswith("PAPER-"):
+                continue
+            try:
+                api_order = await self._client.get_order(oid)
+            except Exception:
+                continue
+            status = api_order.get("status", "")
+            if status in ("executed", "filled"):
+                fill_price = api_order.get("price")
+                if fill_price:
+                    order.price = Decimal(str(fill_price))
+
+                order.state = OrderState.FILLED
+                order.fill_time = time.monotonic()
+                self._risk.record_fill(order.signal.ticker, side=order.signal.side.value)
+                logger.info("Confirmed fill: %s (%s) @ %s", oid, order.signal.ticker, order.price)
+
+    async def promote_to_taker(self) -> None:
+        """Cancel maker orders past their fill horizon and re-place as taker."""
+        now = time.monotonic()
+        to_promote: list[str] = []
+        for oid, order in self._orders.items():
+            if order.state != OrderState.PENDING:
+                continue
+            if order.route != "maker":
+                continue
+            if order.taker_price is None:
+                continue
+            if now - order.placed_at <= order.maker_timeout:
+                continue
+            to_promote.append(oid)
+
+        for oid in to_promote:
+            order = self._orders[oid]
+            if oid.startswith("PAPER-"):
+                order.state = OrderState.CANCELLED
+                self._risk.record_settlement(order.signal.ticker, Decimal("0"))
+                self._update_trade_pnl(oid, Decimal("0"))
+                logger.info("[PAPER] Maker timeout %s — cancelled (no taker re-entry in paper)", oid)
+                continue
+
+            try:
+                await self._client.cancel_order(oid)
+                order.state = OrderState.CANCELLED
+                logger.info("Maker timeout — cancelled %s", oid)
+            except Exception:
+                order.state = OrderState.FILLED
+                order.fill_time = now
+                self._risk.record_fill(order.signal.ticker, side=order.signal.side.value)
+                logger.info("Maker order %s already filled on cancel attempt", oid)
+                continue
+
+            taker_price = order.taker_price
+            if taker_price is None:
+                continue
+
+            try:
+                taker_resp = await self._client.place_order(
+                    ticker=order.signal.ticker,
+                    action="buy",
+                    side=order.signal.side.value,
+                    price_dollars=taker_price,
+                    count=order.contracts,
+                )
+                new_oid = str(taker_resp["order_id"])
+                new_order = TrackedOrder(
+                    signal=order.signal,
+                    order_id=new_oid,
+                    contracts=order.contracts,
+                    price=taker_price,
+                )
+                new_order.route = "taker_promoted"
+                self._orders[new_oid] = new_order
+                self._log_trade(order.signal, new_oid, order.contracts, taker_price, None)
+                logger.info("Promoted to taker: %s -> %s @ %s", oid, new_oid, taker_price)
+            except Exception:
+                logger.exception("Taker promotion failed for %s", oid)
+                self._risk.record_settlement(order.signal.ticker, Decimal("0"))
+
+    async def cancel_stale(self) -> None:
+        """Cancel orders that have been pending longer than ORDER_TIMEOUT_SECONDS.
+
+        If the cancel returns 404 (order already filled), mark as filled
+        instead of cancelled — do NOT remove from risk tracker.
+        """
+        now = time.monotonic()
+        to_cancel: list[str] = []
+        for oid, order in self._orders.items():
+            if oid.startswith("PAPER-"):
+                continue
+            if order.state == OrderState.PENDING and now - order.placed_at > order.timeout:
+                to_cancel.append(oid)
+
+        for oid in to_cancel:
+            order = self._orders[oid]
+            try:
+                await self._client.cancel_order(oid)
+                order.state = OrderState.CANCELLED
+                self._risk.record_settlement(order.signal.ticker, Decimal("0"))
+                self._update_trade_pnl(oid, Decimal("0"))
+                logger.info("Cancelled stale order %s (%s)", oid, order.signal.ticker)
+            except Exception:
+                order.state = OrderState.FILLED
+                order.fill_time = order.placed_at
+                self._risk.record_fill(order.signal.ticker, side=order.signal.side.value)
+                logger.info(
+                    "Order %s (%s) already filled or settled — registered fill",
+                    oid,
+                    order.signal.ticker,
+                )
+
+    def record_settlement(self, ticker: str, result: str) -> None:
+        """Record that a market settled. Update P&L for matching orders."""
+        for oid, order in self._orders.items():
+            if order.signal.ticker != ticker:
+                continue
+            if order.state not in (OrderState.FILLED, OrderState.PENDING):
+                continue
+            won = result == "yes" if order.signal.side.value == "yes" else result == "no"
+            payout = Decimal("1") - order.price if won else -order.price
+            entry_fee = taker_fee(order.contracts, float(order.price))
+            pnl = payout * order.contracts - entry_fee
+            order.pnl = pnl
+            order.state = OrderState.SETTLED
+            self._risk.record_settlement(ticker, pnl)
+            self._update_trade_pnl(oid, pnl, entry_fee)
+            logger.info(
+                "Settled %s side=%s result=%s won=%s pnl=%s fees=%s",
+                ticker,
+                order.signal.side.value,
+                result,
+                won,
+                pnl,
+                entry_fee,
+            )
+
+    async def exit_position(
+        self,
+        order: TrackedOrder,
+        current_market_price: Decimal = Decimal("0"),
+    ) -> bool:
+        """Sell to exit a filled position."""
+        if order.state != OrderState.FILLED:
+            return False
+
+        sell_price = current_market_price if current_market_price > 0 else Decimal("0")
+        pnl_per_contract = sell_price - order.price
+        raw_pnl = pnl_per_contract * order.contracts
+        entry_fee = taker_fee(order.contracts, float(order.price))
+        exit_fee = taker_fee(order.contracts, float(sell_price))
+        total_fees = entry_fee + exit_fee
+        exit_pnl = raw_pnl - total_fees
+
+        sell_order_price = sell_price
+
+        if self._dry_run:
+            logger.info(
+                "[PAPER] Would sell %s %s x%d @ ~%s to exit (est pnl=%s fees=%s)",
+                order.signal.side.value,
+                order.signal.ticker,
+                order.contracts,
+                sell_price,
+                exit_pnl,
+                total_fees,
+            )
+            order.pnl = exit_pnl
+            order.state = OrderState.CANCELLED
+            self._risk.record_settlement(order.signal.ticker, exit_pnl)
+            self._update_trade_pnl(order.order_id, exit_pnl, total_fees)
+            return True
+
+        try:
+            await self._client.place_order(
+                ticker=order.signal.ticker,
+                action="sell",
+                side=order.signal.side.value,
+                price_dollars=sell_order_price,
+                count=order.contracts,
+            )
+            order.pnl = exit_pnl
+            order.state = OrderState.CANCELLED
+            self._risk.record_settlement(order.signal.ticker, exit_pnl)
+            self._update_trade_pnl(order.order_id, exit_pnl, total_fees)
+            logger.info(
+                "Exit sell placed: %s %s x%d est_pnl=%s fees=%s",
+                order.signal.side.value,
+                order.signal.ticker,
+                order.contracts,
+                exit_pnl,
+                total_fees,
+            )
+            return True
+        except Exception:
+            logger.exception("exit_sell_failed", extra={"ticker": order.signal.ticker})
+            return False
+
+    def mark_filled(self, order_id: str) -> None:
+        """Mark an order as filled (called when polling confirms fill)."""
+        order = self._orders.get(order_id)
+        if order is not None and order.state == OrderState.PENDING:
+            order.state = OrderState.FILLED
+            order.fill_time = time.monotonic()
+
+    @property
+    def pending_orders(self) -> list[TrackedOrder]:
+        """All currently pending orders."""
+        return [o for o in self._orders.values() if o.state == OrderState.PENDING]
+
+    @property
+    def filled_orders(self) -> list[TrackedOrder]:
+        """All currently filled (unsettled) orders."""
+        return [o for o in self._orders.values() if o.state == OrderState.FILLED]
+
+    @property
+    def settled_orders(self) -> list[TrackedOrder]:
+        """All settled orders."""
+        return [o for o in self._orders.values() if o.state == OrderState.SETTLED]
+
+    @property
+    def active_tickers(self) -> set[str]:
+        """Tickers with pending or filled (unsettled) orders."""
+        return {
+            o.signal.ticker
+            for o in self._orders.values()
+            if o.state in (OrderState.PENDING, OrderState.FILLED)
+        }
+
+    def log_signal(self, signal: Signal, action: str, reason: str = "") -> None:
+        """Log a signal evaluation to the signals table."""
+        self._db.execute(
+            """INSERT INTO signals
+               (timestamp, ticker, symbol, strategy, side, edge, net_edge,
+                kalshi_price, real_prob, seconds_remaining, action, reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.now(timezone.utc).isoformat(),
+                signal.ticker,
+                signal.symbol,
+                signal.strategy.value,
+                signal.side.value,
+                str(signal.edge),
+                str(signal.net_edge),
+                str(signal.kalshi_price),
+                signal.real_prob,
+                signal.seconds_remaining,
+                action,
+                reason,
+            ),
+        )
+        self._db.commit()
+
+    def _log_trade(
+        self,
+        signal: Signal,
+        order_id: str,
+        contracts: int,
+        price: Decimal,
+        pnl: Decimal | None,
+    ) -> None:
+        self._db.execute(
+            """INSERT INTO trades
+               (timestamp, order_id, ticker, symbol, strategy, side,
+                contracts, price, edge, net_edge, pnl, route)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.now(timezone.utc).isoformat(),
+                order_id,
+                signal.ticker,
+                signal.symbol,
+                signal.strategy.value,
+                signal.side.value,
+                contracts,
+                str(price),
+                str(signal.edge),
+                str(signal.net_edge),
+                str(pnl) if pnl is not None else None,
+                getattr(signal, "route", "taker"),
+            ),
+        )
+        self._db.commit()
+
+    def _update_trade_pnl(
+        self,
+        order_id: str,
+        pnl: Decimal,
+        fees: Decimal | None = None,
+    ) -> None:
+        if fees is not None:
+            self._db.execute(
+                "UPDATE trades SET pnl = ?, fees = ? WHERE order_id = ?",
+                (str(pnl), str(fees), order_id),
+            )
+        else:
+            self._db.execute(
+                "UPDATE trades SET pnl = ? WHERE order_id = ?",
+                (str(pnl), order_id),
+            )
+        self._db.commit()
 
     def log_window_analysis(
         self,
@@ -23,18 +459,117 @@ class Executor:
         ai_commentary: str,
         ai_model: str,
     ) -> None:
-        """Stub no-op for type checking during phase 1."""
-        _ = (
-            symbol,
-            window_open,
-            window_close,
-            open_price,
-            close_price,
-            price_change_pct,
-            result,
-            signals_count,
-            trades_count,
-            paper_pnl,
-            ai_commentary,
-            ai_model,
+        """Log a window analysis result to the database."""
+        with contextlib.suppress(Exception):
+            self._db.execute(
+                """INSERT INTO window_analyses (
+                    timestamp, symbol, window_open, window_close,
+                    open_price, close_price, price_change_pct, result,
+                    signals_count, trades_count, paper_pnl, ai_commentary, ai_model
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    symbol,
+                    window_open,
+                    window_close,
+                    open_price,
+                    close_price,
+                    price_change_pct,
+                    result,
+                    signals_count,
+                    trades_count,
+                    paper_pnl,
+                    ai_commentary,
+                    ai_model,
+                ),
+            )
+            self._db.commit()
+
+    def start_new_session(self, label: str = "") -> int:
+        """Create a new session marker. Returns the session ID."""
+        cur = self._db.execute(
+            "INSERT INTO sessions (started_at, label) VALUES (?, ?)",
+            (datetime.now(timezone.utc).isoformat(), label or None),
         )
+        self._db.commit()
+        return cur.lastrowid or 0
+
+    def current_session_start(self) -> str | None:
+        """Return the started_at timestamp of the most recent session, or None."""
+        row = self._db.execute("SELECT started_at FROM sessions ORDER BY id DESC LIMIT 1").fetchone()
+        return str(row[0]) if row else None
+
+    async def close(self) -> None:
+        """Close the database connection."""
+        self._db.close()
+
+
+def _init_db(path: str) -> sqlite3.Connection:
+    """Create trades database and table if needed."""
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            order_id TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            side TEXT NOT NULL,
+            contracts INTEGER NOT NULL,
+            price TEXT NOT NULL,
+            edge TEXT NOT NULL,
+            net_edge TEXT NOT NULL,
+            pnl TEXT,
+            fees TEXT,
+            route TEXT DEFAULT 'taker'
+        )"""
+    )
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE trades ADD COLUMN fees TEXT")
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE trades ADD COLUMN route TEXT DEFAULT 'taker'")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            side TEXT NOT NULL,
+            edge TEXT NOT NULL,
+            net_edge TEXT NOT NULL,
+            kalshi_price TEXT NOT NULL,
+            real_prob REAL NOT NULL,
+            seconds_remaining INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            reason TEXT
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS window_analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            window_open TEXT NOT NULL,
+            window_close TEXT NOT NULL,
+            open_price REAL NOT NULL,
+            close_price REAL NOT NULL,
+            price_change_pct REAL NOT NULL,
+            result TEXT NOT NULL,
+            signals_count INTEGER NOT NULL,
+            trades_count INTEGER NOT NULL,
+            paper_pnl REAL,
+            ai_commentary TEXT,
+            ai_model TEXT
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT NOT NULL,
+            label TEXT
+        )"""
+    )
+    conn.commit()
+    return conn
