@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-import discord  # type: ignore[import-not-found]
+import discord
 from discord import app_commands
 
 from kalshi_bot.alerts.charts import (
@@ -38,7 +38,7 @@ class DiscordBotAlerter:
         intents = discord.Intents.default()
         self._client = discord.Client(intents=intents)
         self._tree = app_commands.CommandTree(self._client)
-        self._channel: discord.abc.Messageable | None = None
+        self._channel: Any | None = None
 
         self._commands: dict[str, CommandBuilder] = {}
         self._arg_commands: dict[str, ArgCommandBuilder] = {}
@@ -219,14 +219,23 @@ class DiscordBotAlerter:
         if channel is None:
             channel = self._client.get_channel(self._channel_id)
         if channel is None:
-            logger.warning("discord_channel_unavailable channel_id=%s", self._channel_id)
+            try:
+                channel = await self._client.fetch_channel(self._channel_id)
+            except Exception:
+                logger.warning("discord_channel_unavailable channel_id=%s", self._channel_id)
+                return
+            self._channel = channel
+
+        send = getattr(channel, "send", None)
+        if send is None:
+            logger.warning("discord_channel_not_messageable channel_id=%s", self._channel_id)
             return
 
         try:
             if embed is not None:
-                await channel.send(content=text if text else None, embed=embed)
+                await send(content=text if text else None, embed=embed)
             else:
-                await channel.send(text)
+                await send(text)
         except Exception:
             logger.exception("discord_send_failed")
 
