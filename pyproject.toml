@@ -12,6 +12,8 @@ dependencies = [
     "cryptography>=42.0",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "discord.py>=2.3",
+    "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]

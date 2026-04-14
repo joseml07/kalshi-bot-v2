@@ -14,6 +14,24 @@ from typing import Any
 import structlog
 
 from kalshi_bot.alerts.discord import DiscordWebhookAlerter
+from kalshi_bot.alerts.discord_bot import (
+    DiscordBotAlerter,
+    make_analysis_command as make_discord_analysis_command,
+    make_balance_command as make_discord_balance_command,
+    make_config_command as make_discord_config_command,
+    make_kill_command as make_discord_kill_command,
+    make_maker_command as make_discord_maker_command,
+    make_newsession_command as make_discord_newsession_command,
+    make_pnl_command as make_discord_pnl_command,
+    make_positions_command as make_discord_positions_command,
+    make_resume_command as make_discord_resume_command,
+    make_set_command as make_discord_set_command,
+    make_signals_command as make_discord_signals_command,
+    make_stats_command as make_discord_stats_command,
+    make_status_command as make_discord_status_command,
+    make_trades_command as make_discord_trades_command,
+    make_window_command as make_discord_window_command,
+)
 from kalshi_bot.alerts.telegram import (
     TelegramAlerter,
     make_analysis_command,
@@ -62,7 +80,9 @@ SERIES_MAP: dict[str, str] = {
 ORDERBOOK_STALENESS_S = 15.0
 
 
-def _make_alerter(settings: Settings) -> TelegramAlerter | DiscordWebhookAlerter | None:
+def _make_alerter(settings: Settings) -> TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None:
+    if settings.discord_enabled and settings.discord_bot_token and settings.discord_channel_id:
+        return DiscordBotAlerter(settings.discord_bot_token, settings.discord_channel_id)
     if settings.telegram_enabled and settings.telegram_bot_token and settings.telegram_chat_id:
         return TelegramAlerter(
             settings.telegram_bot_token,
@@ -103,6 +123,32 @@ def _register_commands(
     alerter.register_with_args("set", make_set_command(settings))
 
 
+def _register_discord_commands(
+    alerter: DiscordBotAlerter,
+    risk: RiskManager,
+    executor: Executor,
+    client: KalshiClient,
+    settings: Settings,
+    tracker: WindowTracker,
+) -> None:
+    alerter.register("status", make_discord_status_command(risk, executor, client, settings))
+    alerter.register("pnl", make_discord_pnl_command(risk))
+    alerter.register("balance", make_discord_balance_command(client))
+    alerter.register("positions", make_discord_positions_command(client))
+    alerter.register("trades", make_discord_trades_command())
+    alerter.register("kill", make_discord_kill_command())
+    alerter.register("resume", make_discord_resume_command())
+    alerter.register("stats", make_discord_stats_command())
+    alerter.register("maker", make_discord_maker_command())
+    alerter.register("signals", make_discord_signals_command())
+    alerter.register("analysis", make_discord_analysis_command())
+    alerter.register("window", make_discord_window_command(tracker))
+    alerter.register("config", make_discord_config_command(settings))
+    alerter.register("newsession", make_discord_newsession_command())
+    alerter.register_with_args("set", make_discord_set_command(settings))
+    alerter.register_default_slash_commands()
+
+
 async def run_bot(settings: Settings) -> None:
     dry_run = settings.trading_mode == "paper"
     if dry_run:
@@ -121,6 +167,8 @@ async def run_bot(settings: Settings) -> None:
 
     if isinstance(alerter, TelegramAlerter):
         _register_commands(alerter, risk, executor, client, settings, tracker)
+    elif isinstance(alerter, DiscordBotAlerter):
+        _register_discord_commands(alerter, risk, executor, client, settings, tracker)
 
     price_queue: asyncio.Queue[PriceTick] = asyncio.Queue(maxsize=500)
     feed = CoinbaseFeed(price_queue)
@@ -145,6 +193,10 @@ async def run_bot(settings: Settings) -> None:
     tg_task: asyncio.Task[None] | None = None
     if isinstance(alerter, TelegramAlerter):
         tg_task = asyncio.create_task(alerter.poll_commands())
+
+    discord_task: asyncio.Task[None] | None = None
+    if isinstance(alerter, DiscordBotAlerter):
+        discord_task = asyncio.create_task(alerter.start())
 
     try:
         poll_task = asyncio.create_task(
@@ -174,6 +226,9 @@ async def run_bot(settings: Settings) -> None:
         ws_feed_task.cancel()
         shutdown_event.set()
         tasks = [feed_task, ws_feed_task, poll_task, drain_task]
+        if discord_task:
+            discord_task.cancel()
+            tasks.append(discord_task)
         if tg_task:
             tg_task.cancel()
             tasks.append(tg_task)
@@ -212,7 +267,7 @@ async def _poll_and_trade(
     executor: Executor,
     settings: Settings,
     shutdown: asyncio.Event,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | None,
+    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
     openrouter: OpenRouterClient | None,
     recorder: DataRecorder | None = None,
     ws_feed: KalshiOrderbookFeed | None = None,
@@ -255,7 +310,7 @@ async def _poll_and_trade(
 async def _check_settlements(
     client: KalshiClient,
     executor: Executor,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | None,
+    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
 ) -> None:
     tickers = executor.active_tickers
     for ticker in tickers:
@@ -282,7 +337,7 @@ async def _evaluate_exits(
     ticker: str,
     kalshi_yes_price: Decimal,
     settings: Settings,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | None,
+    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
     window: WindowState,
     k: float = 150.0,
 ) -> None:
@@ -328,7 +383,7 @@ async def _evaluate_exits(
 async def _settle_paper_positions(
     executor: Executor,
     tracker: WindowTracker,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | None,
+    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
 ) -> None:
     for order in list(executor.filled_orders):
         symbol = order.signal.symbol
@@ -356,7 +411,7 @@ async def _trade_cycle(
     risk: RiskManager,
     executor: Executor,
     settings: Settings,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | None,
+    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
     openrouter: OpenRouterClient | None = None,
     last_risk_block: dict[str, str] | None = None,
     recorder: DataRecorder | None = None,
@@ -604,7 +659,7 @@ async def _run_window_analysis(
     old_window: WindowState,
     executor: Executor,
     tracker: WindowTracker,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | None,
+    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
     openrouter: OpenRouterClient | None,
 ) -> None:
     ticker = old_window.ticker

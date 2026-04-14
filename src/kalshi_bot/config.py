@@ -49,6 +49,8 @@ class Settings(BaseSettings):
 
     # Discord bot/webhook
     discord_enabled: bool = Field(default=False)
+    discord_bot_token: str = Field(default="")
+    discord_channel_id: str = Field(default="")
 
     # OpenRouter AI Analysis
     openrouter_api_key: str = Field(default="")
