@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+*.db
+*.pem
+KILL_SWITCH
+live_state.json
+*.log
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
