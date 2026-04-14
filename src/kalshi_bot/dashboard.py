@@ -182,6 +182,28 @@ def api_pnl_rolling(all: bool = False) -> list[dict[str, Any]]:  # noqa: A002
     )
 
 
+@app.get("/api/routes")
+def api_routes(all: bool = False) -> list[dict[str, Any]]:  # noqa: A002
+    """Performance grouped by execution route (maker/taker/promoted)."""
+    ss = None if all else _session_start()
+    where = "WHERE pnl IS NOT NULL"
+    params: tuple[Any, ...] = ()
+    if ss:
+        where += " AND timestamp >= ?"
+        params = (ss,)
+    return _query(
+        f"""SELECT route,
+                  COUNT(*) as trades,
+                  SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+                  SUM(CASE WHEN CAST(pnl AS REAL) < 0 THEN 1 ELSE 0 END) as losses,
+                  COALESCE(SUM(CAST(pnl AS REAL)), 0) as total_pnl
+           FROM trades {where}
+           GROUP BY route
+           ORDER BY trades DESC""",  # noqa: S608
+        params,
+    )
+
+
 @app.get("/api/analyses")
 def api_analyses(limit: int = 20) -> list[dict[str, Any]]:
     try:
