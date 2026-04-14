@@ -43,12 +43,16 @@ class Settings(BaseSettings):
     exit_stop_loss: float = Field(default=0.10)
 
     # Telegram alerts (optional)
+    telegram_enabled: bool = Field(default=False)
     telegram_bot_token: str = Field(default="")
     telegram_chat_id: str = Field(default="")
 
+    # Discord bot/webhook
+    discord_enabled: bool = Field(default=False)
+
     # OpenRouter AI Analysis
     openrouter_api_key: str = Field(default="")
-    openrouter_model: str = Field(default="minimax/minimax-m2.7")
+    openrouter_model: str = Field(default="deepseek/deepseek-chat")
 
     # Dashboard
     dashboard_port: int = Field(default=8080)
