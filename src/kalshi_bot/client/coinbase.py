@@ -34,9 +34,11 @@ class CoinbaseFeed:
         self,
         queue: asyncio.Queue[PriceTick],
         products: list[str] | None = None,
+        eval_trigger: asyncio.Event | None = None,
     ) -> None:
         self._queue = queue
         self._products = products or PRODUCTS
+        self._eval_trigger = eval_trigger
         self._running = False
         self._ws: WebSocketClientProtocol | None = None
         self._last_tick_mono: float | None = None
@@ -109,6 +111,9 @@ class CoinbaseFeed:
                     with contextlib.suppress(asyncio.QueueEmpty):
                         self._queue.get_nowait()
                     self._queue.put_nowait(tick)
+
+                if self._eval_trigger is not None:
+                    self._eval_trigger.set()
 
     @property
     def last_tick_age_s(self) -> float | None:

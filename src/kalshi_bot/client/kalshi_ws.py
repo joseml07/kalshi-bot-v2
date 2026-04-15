@@ -86,10 +86,15 @@ class KalshiOrderbookFeed:
             orderbook, updated_at = result
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        eval_trigger: asyncio.Event | None = None,
+    ) -> None:
         self._private_key = load_private_key(settings.kalshi_private_key_path)
         self._api_key = settings.kalshi_api_key
         self._ws_url = settings.ws_base_url
+        self._eval_trigger = eval_trigger
 
         # Active ticker subscriptions — updated via set_tickers().
         self._tickers: set[str] = set()
@@ -286,6 +291,8 @@ class KalshiOrderbookFeed:
             updated_at=datetime.now(timezone.utc),
         )
         self._last_update_mono = time.monotonic()
+        if self._eval_trigger is not None:
+            self._eval_trigger.set()
         logger.debug(
             "kalshi_ws_snapshot ticker=%s yes_levels=%d no_levels=%d",
             ticker,
@@ -332,6 +339,8 @@ class KalshiOrderbookFeed:
 
         state.updated_at = datetime.now(timezone.utc)
         self._last_update_mono = time.monotonic()
+        if self._eval_trigger is not None:
+            self._eval_trigger.set()
 
     @property
     def last_update_age_s(self) -> float | None:
