@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import discord
+import httpx
 from discord import app_commands
 
 from kalshi_bot.alerts.charts import (
@@ -48,9 +49,14 @@ class DiscordBotAlerter:
             logger.info("discord_bot_ready user=%s", self._client.user)
             self._channel = self._client.get_channel(self._channel_id)
             if self._channel:
-                logger.info("discord_channel_acquired name=%s", self._channel.name if hasattr(self._channel, 'name') else 'unknown')
+                logger.info(
+                    "discord_channel_acquired name=%s",
+                    self._channel.name if hasattr(self._channel, "name") else "unknown",
+                )
             else:
-                logger.warning("discord_channel_not_found_in_cache id=%s", self._channel_id)
+                logger.warning(
+                    "discord_channel_not_found_in_cache id=%s", self._channel_id
+                )
             try:
                 await self._tree.sync()
             except Exception:
@@ -167,9 +173,37 @@ class DiscordBotAlerter:
                 return
             await _send_text(interaction, await handler())
 
+        @self._tree.command(name="data", description="Data collection table counts")
+        async def data_cmd(interaction: discord.Interaction) -> None:
+            handler = self._commands.get("data")
+            if handler is None:
+                await _send_text(interaction, "data not registered.")
+                return
+            await _send_text(interaction, await handler())
+
+        @self._tree.command(
+            name="symbols", description="Enabled symbols + window state"
+        )
+        async def symbols_cmd(interaction: discord.Interaction) -> None:
+            handler = self._commands.get("symbols")
+            if handler is None:
+                await _send_text(interaction, "symbols not registered.")
+                return
+            await _send_text(interaction, await handler())
+
+        @self._tree.command(name="ip", description="Server public IP and dashboard URL")
+        async def ip_cmd(interaction: discord.Interaction) -> None:
+            handler = self._commands.get("ip")
+            if handler is None:
+                await _send_text(interaction, "ip not registered.")
+                return
+            await _send_text(interaction, await handler())
+
         @self._tree.command(name="set", description="Set runtime config key")
         @app_commands.describe(key="Setting key", value="Value")
-        async def set_cmd(interaction: discord.Interaction, key: str, value: str) -> None:
+        async def set_cmd(
+            interaction: discord.Interaction, key: str, value: str
+        ) -> None:
             handler = self._arg_commands.get("set")
             if handler is None:
                 await _send_text(interaction, "set command not registered.")
@@ -192,7 +226,10 @@ class DiscordBotAlerter:
             }
             renderer = chart_map.get(kind_norm)
             if renderer is None:
-                await _send_text(interaction, "Unknown chart. Use: pnl, winrate, scatter, routes, edge, daily")
+                await _send_text(
+                    interaction,
+                    "Unknown chart. Use: pnl, winrate, scatter, routes, edge, daily",
+                )
                 return
 
             await interaction.response.defer()
@@ -226,13 +263,17 @@ class DiscordBotAlerter:
             try:
                 channel = await self._client.fetch_channel(self._channel_id)
             except Exception:
-                logger.warning("discord_channel_unavailable channel_id=%s", self._channel_id)
+                logger.warning(
+                    "discord_channel_unavailable channel_id=%s", self._channel_id
+                )
                 return
             self._channel = channel
 
         send = getattr(channel, "send", None)
         if send is None:
-            logger.warning("discord_channel_not_messageable channel_id=%s", self._channel_id)
+            logger.warning(
+                "discord_channel_not_messageable channel_id=%s", self._channel_id
+            )
             return
 
         try:
@@ -244,7 +285,9 @@ class DiscordBotAlerter:
             logger.exception("discord_send_failed")
 
     async def bot_started(self, mode: str) -> None:
-        embed = discord.Embed(title="Bot Started", description=f"Mode: `{mode}`", color=0x3FB950)
+        embed = discord.Embed(
+            title="Bot Started", description=f"Mode: `{mode}`", color=0x3FB950
+        )
         await self._send("", embed)
 
     async def bot_stopped(self) -> None:
@@ -254,14 +297,18 @@ class DiscordBotAlerter:
     async def trade_placed(self, signal: Signal, contracts: int, order_id: str) -> None:
         embed = discord.Embed(title="Trade Placed", color=0x3FB950)
         embed.add_field(name="Ticker", value=signal.ticker, inline=True)
-        embed.add_field(name="Side", value=f"{signal.side.value.upper()} x{contracts}", inline=True)
+        embed.add_field(
+            name="Side", value=f"{signal.side.value.upper()} x{contracts}", inline=True
+        )
         embed.add_field(name="Price", value=f"${signal.kalshi_price}", inline=True)
         embed.add_field(name="Edge", value=f"{signal.net_edge:.1%}", inline=True)
         embed.add_field(name="Route", value=signal.route, inline=True)
         embed.add_field(name="Order", value=order_id, inline=False)
         await self._send("", embed)
 
-    async def trade_exited(self, ticker: str, side: str, contracts: int, reason: str) -> None:
+    async def trade_exited(
+        self, ticker: str, side: str, contracts: int, reason: str
+    ) -> None:
         embed = discord.Embed(title="Position Exited", color=0xD29922)
         embed.add_field(name="Ticker", value=ticker, inline=True)
         embed.add_field(name="Side", value=f"{side.upper()} x{contracts}", inline=True)
@@ -306,11 +353,15 @@ class DiscordBotAlerter:
 
 
 def _get_session_start(conn: sqlite3.Connection) -> str | None:
-    row = conn.execute("SELECT started_at FROM sessions ORDER BY id DESC LIMIT 1").fetchone()
+    row = conn.execute(
+        "SELECT started_at FROM sessions ORDER BY id DESC LIMIT 1"
+    ).fetchone()
     return str(row[0]) if row else None
 
 
-def make_status_command(risk_manager: Any, executor: Any, client: Any, settings: Any) -> CommandBuilder:
+def make_status_command(
+    risk_manager: Any, executor: Any, client: Any, settings: Any
+) -> CommandBuilder:
     async def handler() -> str:
         try:
             balance = await client.get_balance()
@@ -373,7 +424,9 @@ def make_trades_command(db_path: str = "trades.db") -> CommandBuilder:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT * FROM trades ORDER BY id DESC LIMIT 10").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM trades ORDER BY id DESC LIMIT 10"
+            ).fetchall()
             conn.close()
         except Exception:
             return "No trade data yet."
@@ -382,7 +435,9 @@ def make_trades_command(db_path: str = "trades.db") -> CommandBuilder:
         lines = ["**Recent Trades**"]
         for r in rows:
             pnl_str = f"${r['pnl']}" if r["pnl"] else "pending"
-            lines.append(f"{r['side'].upper()} x{r['contracts']} `{r['ticker']}` {pnl_str}")
+            lines.append(
+                f"{r['side'].upper()} x{r['contracts']} `{r['ticker']}` {pnl_str}"
+            )
         return "\n".join(lines)
 
     return handler
@@ -451,7 +506,9 @@ def make_signals_command(db_path: str = "trades.db") -> CommandBuilder:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT * FROM signals ORDER BY id DESC LIMIT 10").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM signals ORDER BY id DESC LIMIT 10"
+            ).fetchall()
             conn.close()
         except Exception:
             return "No signal data yet."
@@ -472,9 +529,15 @@ def make_maker_command(db_path: str = "trades.db") -> CommandBuilder:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            total_maker = conn.execute("SELECT COUNT(*) as c FROM trades WHERE route = 'maker'").fetchone()["c"]
-            promoted = conn.execute("SELECT COUNT(*) as c FROM trades WHERE route = 'taker_promoted'").fetchone()["c"]
-            pure_taker = conn.execute("SELECT COUNT(*) as c FROM trades WHERE route = 'taker'").fetchone()["c"]
+            total_maker = conn.execute(
+                "SELECT COUNT(*) as c FROM trades WHERE route = 'maker'"
+            ).fetchone()["c"]
+            promoted = conn.execute(
+                "SELECT COUNT(*) as c FROM trades WHERE route = 'taker_promoted'"
+            ).fetchone()["c"]
+            pure_taker = conn.execute(
+                "SELECT COUNT(*) as c FROM trades WHERE route = 'taker'"
+            ).fetchone()["c"]
             conn.close()
         except Exception:
             return "Maker stats unavailable."
@@ -547,7 +610,12 @@ def make_set_command(settings: Any) -> ArgCommandBuilder:
             return f"Unknown key '{key}'"
         try:
             if cast is bool:
-                value: bool | int | float | str = raw_value.lower() in ("true", "1", "yes", "on")
+                value: bool | int | float | str = raw_value.lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                    "on",
+                )
             else:
                 value = cast(raw_value)
         except ValueError:
@@ -585,7 +653,9 @@ def make_newsession_command(db_path: str = "trades.db") -> CommandBuilder:
 
             conn = sqlite3.connect(db_path)
             now = datetime.now(timezone.utc).isoformat()
-            cur = conn.execute("INSERT INTO sessions (started_at, label) VALUES (?, ?)", (now, None))
+            cur = conn.execute(
+                "INSERT INTO sessions (started_at, label) VALUES (?, ?)", (now, None)
+            )
             sid = cur.lastrowid
             conn.commit()
             conn.close()
@@ -621,7 +691,9 @@ def make_analysis_command(db_path: str = "trades.db") -> CommandBuilder:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT * FROM window_analyses ORDER BY id DESC LIMIT 5").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM window_analyses ORDER BY id DESC LIMIT 5"
+            ).fetchall()
             conn.close()
         except Exception:
             return "No analyses logged yet."
@@ -633,5 +705,68 @@ def make_analysis_command(db_path: str = "trades.db") -> CommandBuilder:
                 f"{r['symbol']} {r['window_open'][11:16]}-{r['window_close'][11:16]} Δ {r['price_change_pct']:+.2%} {str(r['result']).upper()}"
             )
         return "\n".join(lines)
+
+    return handler
+
+
+def make_data_command(db_path: str = "trades.db") -> CommandBuilder:
+    async def handler() -> str:
+        try:
+            conn = sqlite3.connect(db_path)
+            tables = {
+                "trades": "Trades",
+                "signals": "Signals",
+                "price_ticks": "Price Ticks",
+                "orderbook_snapshots": "OB Snapshots",
+                "window_snapshots": "Window Snaps",
+                "market_events": "Market Events",
+                "strategy_evals": "Strategy Evals",
+                "window_analyses": "AI Analyses",
+            }
+            lines = ["**Data Collection**"]
+            for table, label in tables.items():
+                try:
+                    count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608
+                except sqlite3.OperationalError:
+                    count = 0
+                lines.append(f"{label}: {count:,}")
+            conn.close()
+            return "\n".join(lines)
+        except Exception as exc:
+            return f"Failed: {exc}"
+
+    return handler
+
+
+def make_symbols_command(tracker: Any, settings: Any) -> CommandBuilder:
+    async def handler() -> str:
+        active = {s.strip() for s in settings.symbols.split(",")}
+        all_symbols = ["BTC", "ETH", "SOL"]
+        lines = ["**Symbols**"]
+        for sym in all_symbols:
+            enabled = "ON" if sym in active else "OFF"
+            win = tracker.get_window(sym)
+            if win is not None:
+                status = (
+                    f"${win.current_price:,.2f} "
+                    f"({win.price_change_pct:+.4%}) {win.seconds_remaining}s left"
+                )
+            else:
+                status = "no window"
+            lines.append(f"{sym} [{enabled}] {status}")
+        return "\n".join(lines)
+
+    return handler
+
+
+def make_ip_command() -> CommandBuilder:
+    async def handler() -> str:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get("https://api.ipify.org")
+                ip = resp.text.strip()
+            return f"**Server Info**\nIP: `{ip}`\nDashboard: http://{ip}"
+        except Exception:
+            return "Failed to fetch public IP."
 
     return handler

@@ -21,6 +21,8 @@ from kalshi_bot.alerts.discord_bot import (
     make_analysis_command as make_discord_analysis_command,
     make_balance_command as make_discord_balance_command,
     make_config_command as make_discord_config_command,
+    make_data_command as make_discord_data_command,
+    make_ip_command as make_discord_ip_command,
     make_kill_command as make_discord_kill_command,
     make_maker_command as make_discord_maker_command,
     make_newsession_command as make_discord_newsession_command,
@@ -31,6 +33,7 @@ from kalshi_bot.alerts.discord_bot import (
     make_signals_command as make_discord_signals_command,
     make_stats_command as make_discord_stats_command,
     make_status_command as make_discord_status_command,
+    make_symbols_command as make_discord_symbols_command,
     make_trades_command as make_discord_trades_command,
     make_window_command as make_discord_window_command,
 )
@@ -73,6 +76,10 @@ from kalshi_bot.strategy.momentum import evaluate_momentum
 from kalshi_bot.strategy.probability import estimate_k_from_vol, estimate_up_probability
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger()
+
+AlerterLike = (
+    TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | MultiAlerter | None
+)
 
 SERIES_MAP: dict[str, str] = {
     "BTC": "KXBTC15M",
@@ -176,7 +183,7 @@ def _write_live_state(live_state: dict[str, Any]) -> None:
 def _make_alerter(
     settings: Settings,
 ) -> MultiAlerter:
-    alerters = []
+    alerters: list[TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter] = []
     if (
         settings.discord_enabled
         and settings.discord_bot_token
@@ -194,10 +201,14 @@ def _make_alerter(
             TelegramAlerter(
                 settings.telegram_bot_token,
                 settings.telegram_chat_id,
-                discord_webhook_url=settings.discord_webhook_url,
+                discord_webhook_url="",
             )
         )
-    if settings.discord_enabled and settings.discord_webhook_url and not any(isinstance(a, DiscordBotAlerter) for a in alerters):
+    if (
+        settings.discord_enabled
+        and settings.discord_webhook_url
+        and not any(isinstance(a, DiscordBotAlerter) for a in alerters)
+    ):
         alerters.append(DiscordWebhookAlerter(settings.discord_webhook_url))
     return MultiAlerter(alerters)
 
@@ -254,6 +265,9 @@ def _register_discord_commands(
     alerter.register("analysis", make_discord_analysis_command())
     alerter.register("window", make_discord_window_command(tracker))
     alerter.register("config", make_discord_config_command(settings))
+    alerter.register("data", make_discord_data_command())
+    alerter.register("symbols", make_discord_symbols_command(tracker, settings))
+    alerter.register("ip", make_discord_ip_command())
     alerter.register("newsession", make_discord_newsession_command())
     alerter.register_with_args("set", make_discord_set_command(settings))
     alerter.register_default_slash_commands()
@@ -261,7 +275,7 @@ def _register_discord_commands(
 
 async def _emit_feed_health_alerts(
     *,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
+    alerter: AlerterLike,
     coinbase_age: float | None,
     kalshi_age: float | None,
     threshold_s: float = 30.0,
@@ -452,7 +466,7 @@ async def _fast_eval_loop(
     settings: Settings,
     shutdown: asyncio.Event,
     eval_trigger: asyncio.Event,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
+    alerter: AlerterLike,
     cached: CachedState,
     ws_feed: KalshiOrderbookFeed,
 ) -> None:
@@ -544,7 +558,7 @@ async def _slow_housekeeping_loop(
     executor: Executor,
     settings: Settings,
     shutdown: asyncio.Event,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
+    alerter: AlerterLike,
     openrouter: OpenRouterClient | None,
     cached: CachedState,
     recorder: DataRecorder | None = None,
@@ -842,7 +856,7 @@ async def _slow_housekeeping_loop(
 async def _check_settlements(
     client: KalshiClient,
     executor: Executor,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
+    alerter: AlerterLike,
 ) -> None:
     tickers = executor.active_tickers
     for ticker in tickers:
@@ -869,7 +883,7 @@ async def _evaluate_exits(
     ticker: str,
     kalshi_yes_price: Decimal,
     settings: Settings,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
+    alerter: AlerterLike,
     window: WindowState,
     k: float = 150.0,
 ) -> None:
@@ -925,7 +939,7 @@ async def _evaluate_exits(
 async def _settle_paper_positions(
     executor: Executor,
     tracker: WindowTracker,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
+    alerter: AlerterLike,
 ) -> None:
     for order in list(executor.filled_orders):
         symbol = order.signal.symbol
@@ -955,7 +969,7 @@ async def _run_window_analysis(
     old_window: WindowState,
     executor: Executor,
     tracker: WindowTracker,
-    alerter: TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None,
+    alerter: AlerterLike,
     openrouter: OpenRouterClient | None,
 ) -> None:
     ticker = old_window.ticker
