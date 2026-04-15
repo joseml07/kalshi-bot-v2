@@ -289,6 +289,12 @@ def api_health() -> dict[str, Any]:
         "api_write_per_sec": runtime.get("health", {}).get("api_write_per_sec"),
         "api_read_utilization": runtime.get("health", {}).get("api_read_utilization"),
         "api_write_utilization": runtime.get("health", {}).get("api_write_utilization"),
+        "signal_counters_window_start": runtime.get("health", {}).get(
+            "signal_counters_window_start"
+        ),
+        "signal_counters_hour": runtime.get("health", {}).get(
+            "signal_counters_hour", {}
+        ),
     }
     return result
 

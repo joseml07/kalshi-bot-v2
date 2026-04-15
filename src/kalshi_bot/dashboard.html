@@ -144,6 +144,9 @@ pre.code {
 }
 
 .footer-note { color:var(--muted); font-size:.74rem; margin-top:10px; }
+.health-list { margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:6px; }
+.health-item { background:#0f1622; border:1px solid var(--line-soft); border-radius:8px; padding:6px 8px; font-size:.72rem; color:var(--muted); }
+.health-item strong { color:var(--txt); margin-right:6px; }
 
 @media (max-width: 1150px) {
   .card { grid-column: span 6; }
@@ -274,6 +277,7 @@ pre.code {
             <span class="pill" id="riskPos">Open positions: —</span>
             <span class="pill" id="riskKill">Kill switch: —</span>
           </div>
+          <div id="skipReasonBox" class="health-list"></div>
           <div class="chart-shell chart-wrap" style="margin-top:8px"><canvas id="dailyGauge"></canvas></div>
         </div>
       </section>
@@ -424,6 +428,18 @@ function renderKpis(summary, stats){
   $('riskDaily').textContent = `Daily PnL: ${fmtMoney(pnl)}`;
   $('riskPos').textContent = `Open positions: ${(summary.open_positions||[]).length}`;
   $('riskKill').textContent = `Kill switch: check /status on bot`; 
+}
+
+function renderSkipReasons(health){
+  const box = $('skipReasonBox');
+  if(!box) return;
+  const counters = health?.signal_counters_hour || {};
+  const keys = Object.keys(counters);
+  if(!keys.length){
+    box.innerHTML = '<div class="health-item">No signal counters yet</div>';
+    return;
+  }
+  box.innerHTML = keys.map(k=>`<div class="health-item"><strong>${k}</strong>${Number(counters[k]||0)}</div>`).join('');
 }
 
 function renderLive(data){
@@ -598,7 +614,7 @@ function renderAnalyses(rows){
 
 async function loadStatic(){
   const q=viewAll?'?all=true':'';
-  const [summary,stats,pnl,routes,trades,signals,analyses,symbols] = await Promise.all([
+  const [summary,stats,pnl,routes,trades,signals,analyses,symbols,health] = await Promise.all([
     fetch('/api/summary'+q).then(r=>r.json()),
     fetch('/api/stats'+q).then(r=>r.json()),
     fetch('/api/pnl_rolling'+q).then(r=>r.json()),
@@ -607,6 +623,7 @@ async function loadStatic(){
     fetch('/api/signals?limit=120').then(r=>r.json()),
     fetch('/api/windows?limit=20').then(r=>r.json()),
     fetch('/api/stats_by_symbol'+q).then(r=>r.json()),
+    fetch('/api/health').then(r=>r.json()),
   ]);
 
   renderKpis(summary,stats);
@@ -618,6 +635,7 @@ async function loadStatic(){
   renderEdgeHistogram((trades||[]).filter(t=>t.pnl!=null));
   renderSymbolChart(symbols||[]);
   renderDailyGauge(summary.total_pnl||0);
+  renderSkipReasons((health||{}).runtime||{});
 }
 
 function connectLiveWebSocket(){

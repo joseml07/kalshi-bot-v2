@@ -92,6 +92,11 @@ MIN_EVAL_INTERVAL_S = 0.2
 HOUSEKEEPING_INTERVAL_S = 5.0
 
 
+def _bump_counter(counters: dict[str, int], key: str) -> None:
+    """Increment named in-memory signal counter."""
+    counters[key] = counters.get(key, 0) + 1
+
+
 class CachedState:
     """TTL-based cache for slow-changing REST state."""
 
@@ -318,6 +323,8 @@ async def run_bot(settings: Settings) -> None:
     tracker = WindowTracker()
     recorder = DataRecorder()
     cached = CachedState()
+    signal_counters: dict[str, int] = {}
+    signal_counter_window_start: list[datetime] = [datetime.now(timezone.utc)]
     alerter = _make_alerter(settings)
 
     logger.info(
@@ -388,6 +395,8 @@ async def run_bot(settings: Settings) -> None:
                 alerter,
                 cached,
                 ws_feed,
+                signal_counters,
+                signal_counter_window_start,
             )
         )
         housekeeping_task = asyncio.create_task(
@@ -404,6 +413,8 @@ async def run_bot(settings: Settings) -> None:
                 recorder,
                 feed=feed,
                 ws_feed=ws_feed,
+                signal_counters=signal_counters,
+                signal_counter_window_start=signal_counter_window_start,
             )
         )
         drain_task = asyncio.create_task(
@@ -469,12 +480,19 @@ async def _fast_eval_loop(
     alerter: AlerterLike,
     cached: CachedState,
     ws_feed: KalshiOrderbookFeed,
+    signal_counters: dict[str, int],
+    signal_counter_window_start: list[datetime],
 ) -> None:
     """Event-driven strategy evaluation loop (no REST reads on hot path)."""
     last_eval_mono: dict[str, float] = {}
     last_risk_block: dict[str, str] = {}
 
     while not shutdown.is_set():
+        now_utc = datetime.now(timezone.utc)
+        if (now_utc - signal_counter_window_start[0]).total_seconds() >= 3600:
+            signal_counters.clear()
+            signal_counter_window_start[0] = now_utc
+
         try:
             await asyncio.wait_for(eval_trigger.wait(), timeout=5.0)
         except asyncio.TimeoutError:
@@ -489,23 +507,28 @@ async def _fast_eval_loop(
         for symbol in symbols:
             last = last_eval_mono.get(symbol, 0.0)
             if now - last < MIN_EVAL_INTERVAL_S:
+                _bump_counter(signal_counters, "throttled")
                 continue
 
             window = tracker.get_window(symbol)
             if window is None:
+                _bump_counter(signal_counters, "skip_no_window")
                 continue
 
             market = cached.get_market(symbol)
             if market is None:
+                _bump_counter(signal_counters, "skip_no_market")
                 continue
             ticker = market.ticker
 
             ob_cached = ws_feed.get_orderbook(ticker)
             if ob_cached is None:
+                _bump_counter(signal_counters, "skip_no_orderbook")
                 continue
             orderbook, ob_ts = ob_cached
             age = (datetime.now(timezone.utc) - ob_ts).total_seconds()
             if age > ORDERBOOK_STALENESS_S:
+                _bump_counter(signal_counters, "skip_stale_orderbook")
                 continue
 
             signal = evaluate_momentum(
@@ -523,12 +546,14 @@ async def _fast_eval_loop(
             last_eval_mono[symbol] = now
 
             if signal is None:
+                _bump_counter(signal_counters, "no_signal")
                 continue
 
             try:
                 risk.check(signal)
             except RiskVetoError as exc:
                 executor.log_signal(signal, "skip_risk", str(exc))
+                _bump_counter(signal_counters, "skip_risk")
                 reason_str = str(exc)
                 if last_risk_block.get(ticker) != reason_str:
                     logger.info("risk_blocked", ticker=ticker, reason=reason_str)
@@ -537,6 +562,7 @@ async def _fast_eval_loop(
 
             result = await executor.submit(signal, cached.balance)
             if result is not None:
+                _bump_counter(signal_counters, "trade")
                 last_risk_block.pop(ticker, None)
                 executor.log_signal(signal, "trade", f"order_id={result.order_id}")
                 if alerter is not None:
@@ -544,8 +570,10 @@ async def _fast_eval_loop(
                         signal, result.contracts, result.order_id
                     )
             elif executor._dry_run:
+                _bump_counter(signal_counters, "paper_trade")
                 executor.log_signal(signal, "paper_trade", "")
             else:
+                _bump_counter(signal_counters, "skip_sizing")
                 executor.log_signal(
                     signal, "skip_sizing", "sizing returned 0 contracts"
                 )
@@ -564,6 +592,8 @@ async def _slow_housekeeping_loop(
     recorder: DataRecorder | None = None,
     feed: CoinbaseFeed | None = None,
     ws_feed: KalshiOrderbookFeed | None = None,
+    signal_counters: dict[str, int] | None = None,
+    signal_counter_window_start: list[datetime] | None = None,
 ) -> None:
     """Periodic housekeeping loop (REST I/O, settlements, exits, live state)."""
     last_analysis_time: dict[str, datetime] = {}
@@ -621,6 +651,19 @@ async def _slow_housekeeping_loop(
                 "api_read_utilization": util["read_utilization"],
                 "api_write_utilization": util["write_utilization"],
             }
+
+            if signal_counters is not None and signal_counter_window_start is not None:
+                top = sorted(
+                    signal_counters.items(),
+                    key=lambda x: x[1],
+                    reverse=True,
+                )[:8]
+                live_state["health"]["signal_counters_window_start"] = (
+                    signal_counter_window_start[0].isoformat()
+                )
+                live_state["health"]["signal_counters_hour"] = {
+                    key: value for key, value in top
+                }
 
             await _emit_feed_health_alerts(
                 alerter=alerter,
