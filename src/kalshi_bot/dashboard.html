@@ -64,11 +64,13 @@ header {
 .tabbtn.active { color:var(--txt); border-color:var(--blue); background:#1a2440; }
 
 .sub-controls { display:flex; gap:8px; margin-bottom:10px; }
+.sub-controls .spacer { flex:1; }
 .btn {
   border:1px solid var(--line); background:var(--panel);
   color:var(--muted); border-radius:10px; padding:8px 12px; cursor:pointer; font-size:.8rem;
 }
 .btn.active { color:var(--txt); border-color:var(--blue); background:#1a2440; }
+.btn.ghost { background:#111924; color:#c4d1e8; }
 
 .tab { display:none; }
 .tab.active { display:block; }
@@ -174,6 +176,9 @@ pre.code {
   <div class="sub-controls">
     <button class="btn active" id="btnSession">Session</button>
     <button class="btn" id="btnAll">All-time</button>
+    <span class="spacer"></span>
+    <button class="btn ghost" id="btnExportState">Export Cursor</button>
+    <button class="btn ghost" id="btnExportChanges">Export Changes</button>
   </div>
 
   <section id="tab-live" class="tab active">
@@ -305,6 +310,29 @@ function setView(all){
 }
 $('btnSession').onclick = () => setView(false);
 $('btnAll').onclick = () => setView(true);
+
+function dl(filename, text){
+  const blob = new Blob([text], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function exportState(){
+  const data = await fetch('/api/export/state').then(r=>r.json());
+  dl(`kalshi_export_state_${Date.now()}.json`, JSON.stringify(data,null,2));
+}
+
+async function exportChanges(){
+  const data = await fetch('/api/export/changes').then(r=>r.json());
+  dl(`kalshi_export_changes_${Date.now()}.json`, JSON.stringify(data,null,2));
+}
+
+$('btnExportState').onclick = ()=>{ exportState().catch(()=>{}); };
+$('btnExportChanges').onclick = ()=>{ exportChanges().catch(()=>{}); };
 
 function ensureChart(id, cfg){
   if(charts[id]) charts[id].destroy();

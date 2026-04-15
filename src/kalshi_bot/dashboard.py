@@ -9,6 +9,7 @@ import io
 import json
 import sqlite3
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,13 @@ def _query(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
     finally:
         db.close()
+
+
+def _latest_id(table: str) -> int:
+    rows = _query(f"SELECT COALESCE(MAX(id), 0) as max_id FROM {table}")  # noqa: S608
+    if not rows:
+        return 0
+    return int(rows[0].get("max_id") or 0)
 
 
 def _session_start() -> str | None:
@@ -283,6 +291,88 @@ def api_health() -> dict[str, Any]:
         "api_write_utilization": runtime.get("health", {}).get("api_write_utilization"),
     }
     return result
+
+
+@app.get("/api/export/state")
+def api_export_state() -> dict[str, Any]:
+    """Lightweight export cursor state for remote incremental sync."""
+    tables = [
+        "trades",
+        "signals",
+        "strategy_evals",
+        "price_ticks",
+        "orderbook_snapshots",
+        "window_snapshots",
+        "market_events",
+        "window_analyses",
+    ]
+    state: dict[str, Any] = {"tables": {}, "session_start": _session_start()}
+    for table in tables:
+        with contextlib.suppress(Exception):
+            state["tables"][table] = {
+                "max_id": _latest_id(table),
+                "count": _query(f"SELECT COUNT(*) as cnt FROM {table}")[0]["cnt"],  # noqa: S608
+            }
+    return state
+
+
+@app.get("/api/export/changes")
+def api_export_changes(
+    since_trade_id: int = 0,
+    since_signal_id: int = 0,
+    since_eval_id: int = 0,
+    since_tick_id: int = 0,
+    since_ob_id: int = 0,
+    since_window_id: int = 0,
+    since_event_id: int = 0,
+    since_analysis_id: int = 0,
+    limit: int = 2000,
+) -> dict[str, Any]:
+    """Incremental export for syncing VPS data back to local dev."""
+    max_limit = max(100, min(limit, 10000))
+
+    def _rows(table: str, since_id: int) -> list[dict[str, Any]]:
+        return _query(
+            f"SELECT * FROM {table} WHERE id > ? ORDER BY id ASC LIMIT ?",  # noqa: S608
+            (since_id, max_limit),
+        )
+
+    cursor: dict[str, int] = {
+        "trades": since_trade_id,
+        "signals": since_signal_id,
+        "strategy_evals": since_eval_id,
+        "price_ticks": since_tick_id,
+        "orderbook_snapshots": since_ob_id,
+        "window_snapshots": since_window_id,
+        "market_events": since_event_id,
+        "window_analyses": since_analysis_id,
+    }
+
+    data: dict[str, list[dict[str, Any]]] = {
+        "trades": _rows("trades", since_trade_id),
+        "signals": _rows("signals", since_signal_id),
+        "strategy_evals": _rows("strategy_evals", since_eval_id),
+        "price_ticks": _rows("price_ticks", since_tick_id),
+        "orderbook_snapshots": _rows("orderbook_snapshots", since_ob_id),
+        "window_snapshots": _rows("window_snapshots", since_window_id),
+        "market_events": _rows("market_events", since_event_id),
+        "window_analyses": _rows("window_analyses", since_analysis_id),
+    }
+
+    payload: dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "cursor": cursor,
+        "data": data,
+    }
+
+    next_cursor: dict[str, int] = {}
+    for table, rows in data.items():
+        if rows:
+            next_cursor[table] = int(rows[-1]["id"])
+        else:
+            next_cursor[table] = int(cursor[table])
+    payload["next_cursor"] = next_cursor
+    return payload
 
 
 @app.get("/api/stats_by_symbol")

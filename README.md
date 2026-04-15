@@ -84,6 +84,48 @@ Then open:
 - Press `Ctrl+C` in bot terminal.
 - Bot handles graceful shutdown and closes clients/db connections.
 
+### 8) VPS paper-testing checklist (recommended)
+
+- Run in `KALSHI_ENV=prod` + `TRADING_MODE=paper`
+- Restrict inbound ports to trusted IPs (dashboard/API should not be public-open)
+- Keep `.env` and key PEM out of git
+- Use a process manager (`systemd` or `pm2`) with auto-restart
+- Persist and back up `trades.db` and `live_state.json`
+- Set up basic monitoring: process alive, disk space, dashboard `/api/health`
+
+### 9) Exporting VPS data back to local dev
+
+Dashboard backend includes incremental export APIs:
+
+- `GET /api/export/state` — current max IDs / counts per table
+- `GET /api/export/changes` — row deltas since provided cursors
+
+Example pull:
+
+```bash
+curl "http://<vps-host>:8080/api/export/state"
+curl "http://<vps-host>:8080/api/export/changes?since_trade_id=0&since_signal_id=0"
+```
+
+You can also use dashboard buttons:
+
+- **Export Cursor**
+- **Export Changes**
+
+These download JSON snapshots you can import/analyze locally while bot keeps running on VPS.
+
+### 10) Telegram rollout readiness
+
+Telegram support is already implemented. To enable on VPS:
+
+```env
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=<token>
+TELEGRAM_CHAT_ID=<chat_id>
+```
+
+Keep Discord enabled/disabled per your preference. Start with paper mode while validating alert flow.
+
 ---
 
 ## Release notes
