@@ -78,6 +78,8 @@ class KalshiClient:
         """Make an authenticated API request with rate limiting and retries."""
         limiter = self._write_limiter if is_write else self._read_limiter
         url = f"{self._base_url}{path}"
+        last_resp: httpx.Response | None = None
+        last_error: Exception | None = None
 
         for attempt in range(3):
             await limiter.acquire()
@@ -86,17 +88,25 @@ class KalshiClient:
             else:
                 self._record_read_call()
             headers = self._auth_headers(method, f"/trade-api/v2{path}")
-            resp = await self._client.request(
-                method, url, headers=headers, params=params, json=json_body
-            )
+            try:
+                resp = await self._client.request(
+                    method, url, headers=headers, params=params, json=json_body
+                )
+            except httpx.RequestError as exc:
+                last_error = exc
+                wait = 2**attempt
+                await asyncio.sleep(wait)
+                continue
+
+            last_resp = resp
 
             if resp.status_code == 429:
-                wait = 2 ** attempt
+                wait = 2**attempt
                 await asyncio.sleep(wait)
                 continue
 
             if resp.status_code >= 500:
-                wait = 2 ** attempt
+                wait = 2**attempt
                 await asyncio.sleep(wait)
                 continue
 
@@ -105,8 +115,11 @@ class KalshiClient:
                 return None
             return resp.json()
 
-        resp.raise_for_status()
-        return None  # unreachable, but satisfies mypy
+        if last_resp is not None:
+            last_resp.raise_for_status()
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Kalshi request failed without response")
 
     # --- Market endpoints ---
 

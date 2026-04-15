@@ -80,10 +80,30 @@ SERIES_MAP: dict[str, str] = {
 ORDERBOOK_STALENESS_S = 15.0
 
 
-def _make_alerter(settings: Settings) -> TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None:
-    if settings.discord_enabled and settings.discord_bot_token and settings.discord_channel_id:
-        return DiscordBotAlerter(settings.discord_bot_token, settings.discord_channel_id)
-    if settings.telegram_enabled and settings.telegram_bot_token and settings.telegram_chat_id:
+def _write_live_state(live_state: dict[str, Any]) -> None:
+    """Atomically write live state JSON for dashboard readers."""
+    path = Path("live_state.json")
+    tmp = Path("live_state.json.tmp")
+    tmp.write_text(json.dumps(live_state, default=str), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _make_alerter(
+    settings: Settings,
+) -> TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None:
+    if (
+        settings.discord_enabled
+        and settings.discord_bot_token
+        and settings.discord_channel_id
+    ):
+        return DiscordBotAlerter(
+            settings.discord_bot_token, settings.discord_channel_id
+        )
+    if (
+        settings.telegram_enabled
+        and settings.telegram_bot_token
+        and settings.telegram_chat_id
+    ):
         return TelegramAlerter(
             settings.telegram_bot_token,
             settings.telegram_chat_id,
@@ -131,7 +151,9 @@ def _register_discord_commands(
     settings: Settings,
     tracker: WindowTracker,
 ) -> None:
-    alerter.register("status", make_discord_status_command(risk, executor, client, settings))
+    alerter.register(
+        "status", make_discord_status_command(risk, executor, client, settings)
+    )
     alerter.register("pnl", make_discord_pnl_command(risk))
     alerter.register("balance", make_discord_balance_command(client))
     alerter.register("positions", make_discord_positions_command(client))
@@ -210,7 +232,9 @@ async def run_bot(settings: Settings) -> None:
 
     openrouter: OpenRouterClient | None = None
     if settings.openrouter_api_key:
-        openrouter = OpenRouterClient(settings.openrouter_api_key, settings.openrouter_model)
+        openrouter = OpenRouterClient(
+            settings.openrouter_api_key, settings.openrouter_model
+        )
 
     if isinstance(alerter, TelegramAlerter):
         _register_commands(alerter, risk, executor, client, settings, tracker)
@@ -398,11 +422,17 @@ async def _evaluate_exits(
         return
 
     for order in filled:
-        current_value = kalshi_yes_price if order.signal.side.value == "yes" else Decimal("1") - kalshi_yes_price
+        current_value = (
+            kalshi_yes_price
+            if order.signal.side.value == "yes"
+            else Decimal("1") - kalshi_yes_price
+        )
 
         unrealized_loss = order.price - current_value
 
-        real_prob = estimate_up_probability(window.price_change_pct, window.seconds_remaining, k=k)
+        real_prob = estimate_up_probability(
+            window.price_change_pct, window.seconds_remaining, k=k
+        )
         if order.signal.side.value == "yes":
             current_edge = real_prob - float(kalshi_yes_price)
         else:
@@ -414,7 +444,9 @@ async def _evaluate_exits(
         if order.signal.seconds_remaining > 90 and window.seconds_remaining < 30:
             should_exit = True
             reason = f"time_exit: entered_at={order.signal.seconds_remaining}s now={window.seconds_remaining}s"
-        elif unrealized_loss >= max(Decimal(str(settings.exit_stop_loss)), order.price * Decimal("0.40")):
+        elif unrealized_loss >= max(
+            Decimal(str(settings.exit_stop_loss)), order.price * Decimal("0.40")
+        ):
             should_exit = True
             reason = f"stop_loss: unrealized_loss={unrealized_loss}/contract"
         elif current_edge <= 0:
@@ -429,7 +461,9 @@ async def _evaluate_exits(
             logger.info("exit_signal", ticker=ticker, reason=reason)
             exited = await executor.exit_position(order, current_value)
             if exited and alerter is not None:
-                await alerter.trade_exited(ticker, order.signal.side.value, order.contracts, reason)
+                await alerter.trade_exited(
+                    ticker, order.signal.side.value, order.contracts, reason
+                )
 
 
 async def _settle_paper_positions(
@@ -451,7 +485,10 @@ async def _settle_paper_positions(
         if alerter:
             total_pnl = Decimal("0")
             for settled in executor.settled_orders:
-                if settled.signal.ticker == order.signal.ticker and settled.pnl is not None:
+                if (
+                    settled.signal.ticker == order.signal.ticker
+                    and settled.pnl is not None
+                ):
                     total_pnl += settled.pnl
             won = total_pnl > 0
             await alerter.trade_settled(order.signal.ticker, won, total_pnl)
@@ -510,6 +547,8 @@ async def _trade_cycle(
     live_state["health"] = {
         "coinbase_last_tick_age_s": coinbase_age,
         "kalshi_ws_last_update_age_s": kalshi_age,
+        "coinbase_stale": bool(coinbase_age is not None and coinbase_age > 30.0),
+        "kalshi_ws_stale": bool(kalshi_age is not None and kalshi_age > 30.0),
         "db_last_write_age_s": db_age,
         "db_last_write_latency_ms": db_latency,
         "api_read_per_sec": util["read_per_sec"],
@@ -595,7 +634,37 @@ async def _trade_cycle(
             "seconds_remaining": window.seconds_remaining,
             "kalshi_yes_ask": float(kalshi_yes_price),
             "kalshi_yes_bid": float(best_bid) if best_bid is not None else None,
+            "position_contracts": 0,
+            "position_notional": 0.0,
+            "entry_price": None,
+            "unrealized_pnl": 0.0,
+            "fee_per_contract": None,
         }
+
+        active_orders = [o for o in executor.filled_orders if o.signal.ticker == ticker]
+        if active_orders:
+            total_contracts = sum(o.contracts for o in active_orders)
+            if total_contracts > 0:
+                total_notional = sum(
+                    float(o.price) * o.contracts for o in active_orders
+                )
+                avg_entry = total_notional / total_contracts
+                mark_price = float(kalshi_yes_price)
+                unrealized = 0.0
+                for o in active_orders:
+                    if o.signal.side.value == "yes":
+                        unrealized += (mark_price - float(o.price)) * o.contracts
+                    else:
+                        unrealized += (
+                            (1.0 - mark_price) - float(o.price)
+                        ) * o.contracts
+
+                fee_pc = active_orders[0].fee_per_contract if active_orders else None
+                live_state["symbols"][symbol]["position_contracts"] = total_contracts
+                live_state["symbols"][symbol]["position_notional"] = total_notional
+                live_state["symbols"][symbol]["entry_price"] = avg_entry
+                live_state["symbols"][symbol]["unrealized_pnl"] = unrealized
+                live_state["symbols"][symbol]["fee_per_contract"] = fee_pc
 
         if recorder is not None:
             spread = (kalshi_yes_price - best_bid) if best_bid is not None else None
@@ -612,9 +681,13 @@ async def _trade_cycle(
             )
 
         recent = tracker.get_recent_changes(symbol)
-        dynamic_k = estimate_k_from_vol(recent) if len(recent) >= 5 else settings.logistic_k
+        dynamic_k = (
+            estimate_k_from_vol(recent) if len(recent) >= 5 else settings.logistic_k
+        )
 
-        snap_prob_live = estimate_up_probability(window.price_change_pct, window.seconds_remaining, k=dynamic_k)
+        snap_prob_live = estimate_up_probability(
+            window.price_change_pct, window.seconds_remaining, k=dynamic_k
+        )
         if symbol in live_state["symbols"]:
             live_state["symbols"][symbol]["model_prob"] = snap_prob_live
             live_state["symbols"][symbol]["dynamic_k"] = dynamic_k
@@ -637,7 +710,9 @@ async def _trade_cycle(
                 momentum_60s=window.momentum_60s,
             )
 
-        await _evaluate_exits(executor, ticker, kalshi_yes_price, settings, alerter, window, k=dynamic_k)
+        await _evaluate_exits(
+            executor, ticker, kalshi_yes_price, settings, alerter, window, k=dynamic_k
+        )
 
         signal = evaluate_momentum(
             window,
@@ -710,7 +785,7 @@ async def _trade_cycle(
             executor.log_signal(signal, "skip_sizing", "sizing returned 0 contracts")
 
     with contextlib.suppress(Exception):
-        Path("live_state.json").write_text(json.dumps(live_state, default=str), encoding="utf-8")
+        _write_live_state(live_state)
 
     for symbol, closed_window in tracker.pop_closed_windows():
         prev = tracker.get_previous_result(symbol)
@@ -726,7 +801,9 @@ async def _trade_cycle(
                 result="up" if prev.went_up else "down",
             )
         now_utc = datetime.now(timezone.utc)
-        last_ran = last_analysis_time.get(symbol) if last_analysis_time is not None else None
+        last_ran = (
+            last_analysis_time.get(symbol) if last_analysis_time is not None else None
+        )
         if last_ran is None or (now_utc - last_ran).total_seconds() >= 3600:
             if last_analysis_time is not None:
                 last_analysis_time[symbol] = now_utc
@@ -752,14 +829,20 @@ async def _run_window_analysis(
 
     prev = tracker.get_previous_result(symbol)
     if prev is None:
-        logger.info("window_analysis_skipped", ticker=ticker, reason="no previous result")
+        logger.info(
+            "window_analysis_skipped", ticker=ticker, reason="no previous result"
+        )
         return
 
     try:
-        cur = executor._db.execute("SELECT COUNT(*) FROM signals WHERE ticker = ?", (ticker,))
+        cur = executor._db.execute(
+            "SELECT COUNT(*) FROM signals WHERE ticker = ?", (ticker,)
+        )
         signals_in_window = cur.fetchone()[0]
 
-        cur = executor._db.execute("SELECT COUNT(*) FROM trades WHERE ticker = ?", (ticker,))
+        cur = executor._db.execute(
+            "SELECT COUNT(*) FROM trades WHERE ticker = ?", (ticker,)
+        )
         trades_in_window = cur.fetchone()[0]
 
         cur = executor._db.execute(

@@ -48,6 +48,9 @@ header {
 .badges { display: flex; gap: 8px; flex-wrap: wrap; }
 .badge { border:1px solid var(--line-soft); background:var(--panel); border-radius:999px; padding:6px 10px; font-size:0.76rem; color:var(--muted); }
 .badge strong { color: var(--txt); }
+.badge.health-ok strong { color: var(--green); }
+.badge.health-warn strong { color: var(--amber); }
+.badge.health-bad strong { color: var(--red); }
 .pulse { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
 .live { background: var(--green); }
 .idle { background: var(--amber); }
@@ -156,6 +159,7 @@ pre.code {
       <span class="badge"><span id="statusDot" class="pulse idle"></span><strong id="statusText">connecting</strong></span>
       <span class="badge">Updated: <strong id="updated">—</strong></span>
       <span class="badge">View: <strong id="viewName">session</strong></span>
+      <span class="badge" id="healthBadge"><strong>health:</strong> checking</span>
     </div>
   </header>
 
@@ -342,12 +346,30 @@ function renderLive(data){
   $('statusDot').className = 'pulse live';
   $('statusText').textContent = 'live';
   $('updated').textContent = toLocal(data.updated_at);
+  const health = data.health || {};
+  const staleCoinbase = Boolean(health.coinbase_stale);
+  const staleKalshi = Boolean(health.kalshi_ws_stale);
+  const maxUtil = Math.max(Number(health.api_read_utilization||0), Number(health.api_write_utilization||0));
+  const healthBadge = $('healthBadge');
+  if (healthBadge){
+    healthBadge.classList.remove('health-ok','health-warn','health-bad');
+    if (staleCoinbase || staleKalshi) {
+      healthBadge.classList.add('health-bad');
+      healthBadge.innerHTML = `<strong>health:</strong> stale feed`;
+    } else if (maxUtil >= 0.85) {
+      healthBadge.classList.add('health-warn');
+      healthBadge.innerHTML = `<strong>health:</strong> api hot ${(maxUtil*100).toFixed(0)}%`;
+    } else {
+      healthBadge.classList.add('health-ok');
+      healthBadge.innerHTML = `<strong>health:</strong> nominal`;
+    }
+  }
   const symbols=data.symbols||{}; const keys=Object.keys(symbols);
   if(!keys.length){ $('liveGrid').innerHTML='<div class="symbol"><div class="name">No active windows</div><div class="price">—</div><div class="meta"><span>Waiting for market momentum…</span></div><div class="progress"><span style="width:12%;opacity:.3"></span></div></div>'; return; }
   $('liveGrid').innerHTML = keys.map(sym=>{
     const s=symbols[sym]; const pct=Number(s.price_change_pct||0)*100; const rem=Number(s.seconds_remaining||0);
     const progress=Math.max(0,Math.min(100,(1-rem/900)*100));
-    return `<div class="symbol"><div class="name">${sym}</div><div class="price">$${Number(s.current_price||0).toLocaleString(undefined,{maximumFractionDigits:2})}</div><div class="meta"><span>Δ <span class="${pct>=0?'pos':'neg'}">${pct>=0?'+':''}${pct.toFixed(3)}%</span></span><span>YES ask: ${s.kalshi_yes_ask!=null?'$'+Number(s.kalshi_yes_ask).toFixed(2):'—'}</span><span>P(up): ${s.model_prob!=null?(Number(s.model_prob)*100).toFixed(1)+'%':'—'}</span></div><div class="progress"><span style="width:${progress}%"></span></div></div>`;
+    return `<div class="symbol"><div class="name">${sym}</div><div class="price">$${Number(s.current_price||0).toLocaleString(undefined,{maximumFractionDigits:2})}</div><div class="meta"><span>Δ <span class="${pct>=0?'pos':'neg'}">${pct>=0?'+':''}${pct.toFixed(3)}%</span></span><span>YES ask: ${s.kalshi_yes_ask!=null?'$'+Number(s.kalshi_yes_ask).toFixed(2):'—'}</span><span>P(up): ${s.model_prob!=null?(Number(s.model_prob)*100).toFixed(1)+'%':'—'}</span><span>Pos: ${Number(s.position_contracts||0)} @ ${s.entry_price!=null?'$'+Number(s.entry_price).toFixed(2):'—'}</span><span>U-PnL: <span class="${clsByVal(s.unrealized_pnl)}">${fmtMoney(s.unrealized_pnl||0)}</span></span></div><div class="progress"><span style="width:${progress}%"></span></div></div>`;
   }).join('');
 }
 

@@ -13,7 +13,7 @@ from enum import Enum
 from kalshi_bot.client.kalshi import KalshiClient
 from kalshi_bot.risk.manager import RiskManager
 from kalshi_bot.risk.sizing import quarter_kelly_size
-from kalshi_bot.strategy.fees import taker_fee
+from kalshi_bot.strategy.fees import maker_fee, taker_fee
 from kalshi_bot.strategy.signals import Signal
 
 logger = logging.getLogger(__name__)
@@ -50,10 +50,21 @@ class TrackedOrder:
         self.fill_time: float | None = None
         self.pnl: Decimal | None = None
         self.negative_edge_count: int = 0
-        self.timeout: int = 20 if signal.seconds_remaining < 120 else ORDER_TIMEOUT_SECONDS
+        self.timeout: int = (
+            20 if signal.seconds_remaining < 120 else ORDER_TIMEOUT_SECONDS
+        )
         self.route: str = signal.route if hasattr(signal, "route") else "taker"
         self.taker_price: Decimal | None = getattr(signal, "taker_price", None)
         self.maker_timeout: int = 90
+
+    @property
+    def fee_per_contract(self) -> float:
+        """Fee per contract in dollars based on execution route."""
+        if self.route == "maker":
+            total = maker_fee(self.contracts, float(self.price))
+        else:
+            total = taker_fee(self.contracts, float(self.price))
+        return float(total / self.contracts)
 
 
 class Executor:
@@ -80,7 +91,9 @@ class Executor:
         or dry_run is active.
         """
         price = float(signal.kalshi_price)
-        win_prob = signal.real_prob if signal.side.value == "yes" else 1 - signal.real_prob
+        win_prob = (
+            signal.real_prob if signal.side.value == "yes" else 1 - signal.real_prob
+        )
         contracts = quarter_kelly_size(win_prob, price, bankroll)
         if contracts == 0:
             logger.debug("Sizing returned 0 contracts for %s — skipping", signal.ticker)
@@ -159,8 +172,15 @@ class Executor:
 
                 order.state = OrderState.FILLED
                 order.fill_time = time.monotonic()
-                self._risk.record_fill(order.signal.ticker, side=order.signal.side.value)
-                logger.info("Confirmed fill: %s (%s) @ %s", oid, order.signal.ticker, order.price)
+                self._risk.record_fill(
+                    order.signal.ticker, side=order.signal.side.value
+                )
+                logger.info(
+                    "Confirmed fill: %s (%s) @ %s",
+                    oid,
+                    order.signal.ticker,
+                    order.price,
+                )
 
     async def promote_to_taker(self) -> None:
         """Cancel maker orders past their fill horizon and re-place as taker."""
@@ -183,7 +203,10 @@ class Executor:
                 order.state = OrderState.CANCELLED
                 self._risk.record_settlement(order.signal.ticker, Decimal("0"))
                 self._update_trade_pnl(oid, Decimal("0"))
-                logger.info("[PAPER] Maker timeout %s — cancelled (no taker re-entry in paper)", oid)
+                logger.info(
+                    "[PAPER] Maker timeout %s — cancelled (no taker re-entry in paper)",
+                    oid,
+                )
                 continue
 
             try:
@@ -193,7 +216,9 @@ class Executor:
             except Exception:
                 order.state = OrderState.FILLED
                 order.fill_time = now
-                self._risk.record_fill(order.signal.ticker, side=order.signal.side.value)
+                self._risk.record_fill(
+                    order.signal.ticker, side=order.signal.side.value
+                )
                 logger.info("Maker order %s already filled on cancel attempt", oid)
                 continue
 
@@ -218,8 +243,12 @@ class Executor:
                 )
                 new_order.route = "taker_promoted"
                 self._orders[new_oid] = new_order
-                self._log_trade(order.signal, new_oid, order.contracts, taker_price, None)
-                logger.info("Promoted to taker: %s -> %s @ %s", oid, new_oid, taker_price)
+                self._log_trade(
+                    order.signal, new_oid, order.contracts, taker_price, None
+                )
+                logger.info(
+                    "Promoted to taker: %s -> %s @ %s", oid, new_oid, taker_price
+                )
             except Exception:
                 logger.exception("Taker promotion failed for %s", oid)
                 self._risk.record_settlement(order.signal.ticker, Decimal("0"))
@@ -235,7 +264,10 @@ class Executor:
         for oid, order in self._orders.items():
             if oid.startswith("PAPER-"):
                 continue
-            if order.state == OrderState.PENDING and now - order.placed_at > order.timeout:
+            if (
+                order.state == OrderState.PENDING
+                and now - order.placed_at > order.timeout
+            ):
                 to_cancel.append(oid)
 
         for oid in to_cancel:
@@ -249,7 +281,9 @@ class Executor:
             except Exception:
                 order.state = OrderState.FILLED
                 order.fill_time = order.placed_at
-                self._risk.record_fill(order.signal.ticker, side=order.signal.side.value)
+                self._risk.record_fill(
+                    order.signal.ticker, side=order.signal.side.value
+                )
                 logger.info(
                     "Order %s (%s) already filled or settled — registered fill",
                     oid,
@@ -263,9 +297,14 @@ class Executor:
                 continue
             if order.state not in (OrderState.FILLED, OrderState.PENDING):
                 continue
-            won = result == "yes" if order.signal.side.value == "yes" else result == "no"
+            won = (
+                result == "yes" if order.signal.side.value == "yes" else result == "no"
+            )
             payout = Decimal("1") - order.price if won else -order.price
-            entry_fee = taker_fee(order.contracts, float(order.price))
+            if order.route == "maker":
+                entry_fee = maker_fee(order.contracts, float(order.price))
+            else:
+                entry_fee = taker_fee(order.contracts, float(order.price))
             pnl = payout * order.contracts - entry_fee
             order.pnl = pnl
             order.state = OrderState.SETTLED
@@ -496,7 +535,9 @@ class Executor:
 
     def current_session_start(self) -> str | None:
         """Return the started_at timestamp of the most recent session, or None."""
-        row = self._db.execute("SELECT started_at FROM sessions ORDER BY id DESC LIMIT 1").fetchone()
+        row = self._db.execute(
+            "SELECT started_at FROM sessions ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         return str(row[0]) if row else None
 
     async def close(self) -> None:

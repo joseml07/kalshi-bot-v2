@@ -50,7 +50,9 @@ def _session_start() -> str | None:
 
 @app.get("/api/trades")
 def api_trades(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
-    return _query("SELECT * FROM trades ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset))
+    return _query(
+        "SELECT * FROM trades ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
+    )
 
 
 @app.get("/api/summary")
@@ -207,7 +209,9 @@ def api_routes(all: bool = False) -> list[dict[str, Any]]:  # noqa: A002
 @app.get("/api/analyses")
 def api_analyses(limit: int = 20) -> list[dict[str, Any]]:
     try:
-        return _query("SELECT * FROM window_analyses ORDER BY id DESC LIMIT ?", (limit,))
+        return _query(
+            "SELECT * FROM window_analyses ORDER BY id DESC LIMIT ?", (limit,)
+        )
     except Exception:
         return []
 
@@ -261,10 +265,20 @@ def api_health() -> dict[str, Any]:
             runtime = json.loads(live_path.read_text(encoding="utf-8"))
 
     result["runtime"] = {
-        "coinbase_last_tick_age_s": runtime.get("health", {}).get("coinbase_last_tick_age_s"),
-        "kalshi_ws_last_update_age_s": runtime.get("health", {}).get("kalshi_ws_last_update_age_s"),
+        "coinbase_last_tick_age_s": runtime.get("health", {}).get(
+            "coinbase_last_tick_age_s"
+        ),
+        "kalshi_ws_last_update_age_s": runtime.get("health", {}).get(
+            "kalshi_ws_last_update_age_s"
+        ),
+        "coinbase_stale": runtime.get("health", {}).get("coinbase_stale"),
+        "kalshi_ws_stale": runtime.get("health", {}).get("kalshi_ws_stale"),
         "db_last_write_age_s": runtime.get("health", {}).get("db_last_write_age_s"),
-        "db_last_write_latency_ms": runtime.get("health", {}).get("db_last_write_latency_ms"),
+        "db_last_write_latency_ms": runtime.get("health", {}).get(
+            "db_last_write_latency_ms"
+        ),
+        "api_read_per_sec": runtime.get("health", {}).get("api_read_per_sec"),
+        "api_write_per_sec": runtime.get("health", {}).get("api_write_per_sec"),
         "api_read_utilization": runtime.get("health", {}).get("api_read_utilization"),
         "api_write_utilization": runtime.get("health", {}).get("api_write_utilization"),
     }
@@ -406,7 +420,9 @@ def download_full_json() -> StreamingResponse:
         ),
     }
     with contextlib.suppress(Exception):
-        data["window_analyses"] = _query("SELECT * FROM window_analyses ORDER BY id ASC")
+        data["window_analyses"] = _query(
+            "SELECT * FROM window_analyses ORDER BY id ASC"
+        )
     content = json.dumps(data, default=str)
     return StreamingResponse(
         io.StringIO(content),
@@ -422,7 +438,11 @@ async def api_live() -> StreamingResponse:
     async def event_stream() -> AsyncIterator[str]:
         while True:
             try:
-                payload = live_path.read_text(encoding="utf-8") if live_path.exists() else "{}"
+                payload = (
+                    live_path.read_text(encoding="utf-8")
+                    if live_path.exists()
+                    else "{}"
+                )
             except Exception:
                 payload = "{}"
             yield f"data: {payload}\n\n"
@@ -443,7 +463,11 @@ async def ws_live(websocket: WebSocket) -> None:
     try:
         while True:
             try:
-                payload = live_path.read_text(encoding="utf-8") if live_path.exists() else "{}"
+                payload = (
+                    live_path.read_text(encoding="utf-8")
+                    if live_path.exists()
+                    else "{}"
+                )
             except Exception:
                 payload = "{}"
             await websocket.send_text(payload)
