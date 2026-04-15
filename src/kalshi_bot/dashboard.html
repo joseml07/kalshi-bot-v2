@@ -51,6 +51,9 @@ header {
 .badge.health-ok strong { color: var(--green); }
 .badge.health-warn strong { color: var(--amber); }
 .badge.health-bad strong { color: var(--red); }
+.badge.latency-good strong { color: var(--green); }
+.badge.latency-warn strong { color: var(--amber); }
+.badge.latency-bad strong { color: var(--red); }
 .pulse { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
 .live { background: var(--green); }
 .idle { background: var(--amber); }
@@ -162,6 +165,7 @@ pre.code {
       <span class="badge">Updated: <strong id="updated">—</strong></span>
       <span class="badge">View: <strong id="viewName">session</strong></span>
       <span class="badge" id="healthBadge"><strong>health:</strong> checking</span>
+      <span class="badge" id="latencyBadge"><strong>latency:</strong> —</span>
     </div>
   </header>
 
@@ -289,11 +293,47 @@ const TZ = 'America/New_York';
 const $ = id => document.getElementById(id);
 let viewAll = false;
 let charts = {};
+let lastApiLatencyMs = null;
+let lastStreamLagMs = null;
 
 function fmtMoney(v){ const n=Number(v||0); return `${n>=0?'+':''}$${n.toFixed(2)}`; }
 function clsByVal(v){ const n=Number(v||0); return n>0?'pos':n<0?'neg':''; }
 function toLocal(ts){ if(!ts) return '—'; const s=ts.replace(' ','T'); const d=new Date(s.endsWith('Z')||s.includes('+')?s:s+'Z'); return d.toLocaleTimeString('en-US',{timeZone:TZ,hour12:false}); }
 function jsonPretty(x){ return JSON.stringify(x, null, 2); }
+
+function parseUtcTs(ts){
+  if(!ts) return null;
+  const s = String(ts).replace(' ','T');
+  const d = new Date(s.endsWith('Z') || s.includes('+') ? s : s+'Z');
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function updateLatencyBadge(){
+  const b = $('latencyBadge');
+  if(!b) return;
+  b.classList.remove('latency-good','latency-warn','latency-bad');
+  const candidates = [lastApiLatencyMs, lastStreamLagMs].filter(v => Number.isFinite(v));
+  if(!candidates.length){
+    b.innerHTML = `<strong>latency:</strong> —`;
+    return;
+  }
+  const ms = Math.round(Math.max(...candidates));
+  if(ms < 180) b.classList.add('latency-good');
+  else if(ms < 500) b.classList.add('latency-warn');
+  else b.classList.add('latency-bad');
+  b.innerHTML = `<strong>latency:</strong> ${ms}ms`;
+}
+
+async function measureApiLatency(){
+  const t0 = performance.now();
+  try{
+    await fetch('/api/health', { cache: 'no-store' });
+    lastApiLatencyMs = performance.now() - t0;
+  }catch(_){
+    lastApiLatencyMs = null;
+  }
+  updateLatencyBadge();
+}
 
 function tabSwitch(name){
   document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('active', b.dataset.tab===name));
@@ -374,6 +414,9 @@ function renderLive(data){
   $('statusDot').className = 'pulse live';
   $('statusText').textContent = 'live';
   $('updated').textContent = toLocal(data.updated_at);
+  const liveTs = parseUtcTs(data.updated_at);
+  lastStreamLagMs = liveTs ? Math.max(0, Date.now() - liveTs.getTime()) : null;
+  updateLatencyBadge();
   const health = data.health || {};
   const staleCoinbase = Boolean(health.coinbase_stale);
   const staleKalshi = Boolean(health.kalshi_ws_stale);
@@ -567,12 +610,14 @@ function connectLiveWebSocket(){
   ws.onopen = ()=>{ $('statusDot').className='pulse live'; $('statusText').textContent='live'; };
   ws.onmessage = ev=>{ try{ renderLive(JSON.parse(ev.data)); }catch(_){ } };
   ws.onerror = ()=>{ $('statusDot').className='pulse err'; $('statusText').textContent='ws error'; };
-  ws.onclose = ()=>{ $('statusDot').className='pulse idle'; $('statusText').textContent='reconnecting'; setTimeout(connectLiveWebSocket, 1500); };
+  ws.onclose = ()=>{ $('statusDot').className='pulse idle'; $('statusText').textContent='reconnecting'; lastStreamLagMs = null; updateLatencyBadge(); setTimeout(connectLiveWebSocket, 1500); };
 }
 
 connectLiveWebSocket();
 loadStatic();
+measureApiLatency();
 setInterval(loadStatic, 12000);
+setInterval(measureApiLatency, 12000);
 </script>
 </body>
 </html>
