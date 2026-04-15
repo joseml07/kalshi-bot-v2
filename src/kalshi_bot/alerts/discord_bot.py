@@ -47,6 +47,10 @@ class DiscordBotAlerter:
         async def on_ready() -> None:
             logger.info("discord_bot_ready user=%s", self._client.user)
             self._channel = self._client.get_channel(self._channel_id)
+            if self._channel:
+                logger.info("discord_channel_acquired name=%s", self._channel.name if hasattr(self._channel, 'name') else 'unknown')
+            else:
+                logger.warning("discord_channel_not_found_in_cache id=%s", self._channel_id)
             try:
                 await self._tree.sync()
             except Exception:

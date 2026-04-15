@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 import sqlite3
 from collections.abc import Callable, Coroutine
@@ -13,10 +12,11 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import structlog
 
 from kalshi_bot.strategy.signals import Signal
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 TELEGRAM_API = "https://api.telegram.org"
 
@@ -175,9 +175,11 @@ class TelegramAlerter:
                 json={"chat_id": self._chat_id, "text": text, "parse_mode": "HTML"},
             )
             if resp.status_code != 200:
-                logger.warning("Telegram send failed: %s %s", resp.status_code, resp.text)
+                logger.warning("telegram_send_failed", status=resp.status_code, response=resp.text)
+            else:
+                logger.info("telegram_send_success")
         except Exception:
-            logger.exception("Telegram send error")
+            logger.exception("telegram_send_error")
 
     async def _send_discord(self, text: str) -> None:
         if not self._discord_url:

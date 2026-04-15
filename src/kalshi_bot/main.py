@@ -14,6 +14,7 @@ from typing import Any
 
 import structlog
 
+from kalshi_bot.alerts import MultiAlerter
 from kalshi_bot.alerts.discord import DiscordWebhookAlerter
 from kalshi_bot.alerts.discord_bot import (
     DiscordBotAlerter,
@@ -174,28 +175,31 @@ def _write_live_state(live_state: dict[str, Any]) -> None:
 
 def _make_alerter(
     settings: Settings,
-) -> TelegramAlerter | DiscordWebhookAlerter | DiscordBotAlerter | None:
+) -> MultiAlerter:
+    alerters = []
     if (
         settings.discord_enabled
         and settings.discord_bot_token
         and settings.discord_channel_id
     ):
-        return DiscordBotAlerter(
-            settings.discord_bot_token, settings.discord_channel_id
+        alerters.append(
+            DiscordBotAlerter(settings.discord_bot_token, settings.discord_channel_id)
         )
     if (
         settings.telegram_enabled
         and settings.telegram_bot_token
         and settings.telegram_chat_id
     ):
-        return TelegramAlerter(
-            settings.telegram_bot_token,
-            settings.telegram_chat_id,
-            discord_webhook_url=settings.discord_webhook_url,
+        alerters.append(
+            TelegramAlerter(
+                settings.telegram_bot_token,
+                settings.telegram_chat_id,
+                discord_webhook_url=settings.discord_webhook_url,
+            )
         )
-    if settings.discord_enabled and settings.discord_webhook_url:
-        return DiscordWebhookAlerter(settings.discord_webhook_url)
-    return None
+    if settings.discord_enabled and settings.discord_webhook_url and not any(isinstance(a, DiscordBotAlerter) for a in alerters):
+        alerters.append(DiscordWebhookAlerter(settings.discord_webhook_url))
+    return MultiAlerter(alerters)
 
 
 def _register_commands(
@@ -303,16 +307,9 @@ async def run_bot(settings: Settings) -> None:
     alerter = _make_alerter(settings)
 
     logger.info(
-        "alerter_mode_selected",
-        mode=(
-            "discord_bot"
-            if isinstance(alerter, DiscordBotAlerter)
-            else "telegram"
-            if isinstance(alerter, TelegramAlerter)
-            else "discord_webhook"
-            if isinstance(alerter, DiscordWebhookAlerter)
-            else "none"
-        ),
+        "alerters_initialized",
+        count=len(alerter.alerters),
+        modes=[type(a).__name__ for a in alerter.alerters],
     )
 
     openrouter: OpenRouterClient | None = None
@@ -321,10 +318,11 @@ async def run_bot(settings: Settings) -> None:
             settings.openrouter_api_key, settings.openrouter_model
         )
 
-    if isinstance(alerter, TelegramAlerter):
-        _register_commands(alerter, risk, executor, client, settings, tracker)
-    elif isinstance(alerter, DiscordBotAlerter):
-        _register_discord_commands(alerter, risk, executor, client, settings, tracker)
+    for a in alerter.alerters:
+        if isinstance(a, TelegramAlerter):
+            _register_commands(a, risk, executor, client, settings, tracker)
+        elif isinstance(a, DiscordBotAlerter):
+            _register_discord_commands(a, risk, executor, client, settings, tracker)
 
     price_queue: asyncio.Queue[PriceTick] = asyncio.Queue(maxsize=500)
     eval_trigger = asyncio.Event()
@@ -357,13 +355,12 @@ async def run_bot(settings: Settings) -> None:
     feed_task = asyncio.create_task(feed.start())
     ws_feed_task = asyncio.create_task(ws_feed.start())
 
-    tg_task: asyncio.Task[None] | None = None
-    if isinstance(alerter, TelegramAlerter):
-        tg_task = asyncio.create_task(alerter.poll_commands())
-
-    discord_task: asyncio.Task[None] | None = None
-    if isinstance(alerter, DiscordBotAlerter):
-        discord_task = asyncio.create_task(alerter.start())
+    alerter_tasks: list[asyncio.Task[None]] = []
+    for a in alerter.alerters:
+        if isinstance(a, TelegramAlerter):
+            alerter_tasks.append(asyncio.create_task(a.poll_commands()))
+        elif isinstance(a, DiscordBotAlerter):
+            alerter_tasks.append(asyncio.create_task(a.start()))
 
     try:
         fast_eval_task = asyncio.create_task(
@@ -414,12 +411,9 @@ async def run_bot(settings: Settings) -> None:
         ws_feed_task.cancel()
         shutdown_event.set()
         tasks = [feed_task, ws_feed_task, fast_eval_task, housekeeping_task, drain_task]
-        if discord_task:
-            discord_task.cancel()
-            tasks.append(discord_task)
-        if tg_task:
-            tg_task.cancel()
-            tasks.append(tg_task)
+        for t in alerter_tasks:
+            t.cancel()
+            tasks.append(t)
         await asyncio.gather(*tasks, return_exceptions=True)
         if openrouter:
             await openrouter.close()
