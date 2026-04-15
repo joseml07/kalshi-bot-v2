@@ -54,6 +54,9 @@ header {
 .badge.latency-good strong { color: var(--green); }
 .badge.latency-warn strong { color: var(--amber); }
 .badge.latency-bad strong { color: var(--red); }
+.badge.age-good strong { color: var(--green); }
+.badge.age-warn strong { color: var(--amber); }
+.badge.age-bad strong { color: var(--red); }
 .pulse { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
 .live { background: var(--green); }
 .idle { background: var(--amber); }
@@ -165,7 +168,8 @@ pre.code {
       <span class="badge">Updated: <strong id="updated">—</strong></span>
       <span class="badge">View: <strong id="viewName">session</strong></span>
       <span class="badge" id="healthBadge"><strong>health:</strong> checking</span>
-      <span class="badge" id="latencyBadge"><strong>latency:</strong> —</span>
+      <span class="badge" id="pingBadge"><strong>ping:</strong> —</span>
+      <span class="badge" id="dataAgeBadge"><strong>data age:</strong> —</span>
     </div>
   </header>
 
@@ -309,19 +313,31 @@ function parseUtcTs(ts){
 }
 
 function updateLatencyBadge(){
-  const b = $('latencyBadge');
-  if(!b) return;
-  b.classList.remove('latency-good','latency-warn','latency-bad');
-  const candidates = [lastApiLatencyMs, lastStreamLagMs].filter(v => Number.isFinite(v));
-  if(!candidates.length){
-    b.innerHTML = `<strong>latency:</strong> —`;
-    return;
+  const ping = $('pingBadge');
+  const age = $('dataAgeBadge');
+  if(!ping || !age) return;
+
+  ping.classList.remove('latency-good','latency-warn','latency-bad');
+  if(Number.isFinite(lastApiLatencyMs)){
+    const ms = Math.round(lastApiLatencyMs);
+    if(ms < 180) ping.classList.add('latency-good');
+    else if(ms < 500) ping.classList.add('latency-warn');
+    else ping.classList.add('latency-bad');
+    ping.innerHTML = `<strong>ping:</strong> ${ms}ms`;
+  } else {
+    ping.innerHTML = `<strong>ping:</strong> —`;
   }
-  const ms = Math.round(Math.max(...candidates));
-  if(ms < 180) b.classList.add('latency-good');
-  else if(ms < 500) b.classList.add('latency-warn');
-  else b.classList.add('latency-bad');
-  b.innerHTML = `<strong>latency:</strong> ${ms}ms`;
+
+  age.classList.remove('age-good','age-warn','age-bad');
+  if(Number.isFinite(lastStreamLagMs)){
+    const ms = Math.round(lastStreamLagMs);
+    if(ms < 1200) age.classList.add('age-good');
+    else if(ms < 3200) age.classList.add('age-warn');
+    else age.classList.add('age-bad');
+    age.innerHTML = `<strong>data age:</strong> ${ms}ms`;
+  } else {
+    age.innerHTML = `<strong>data age:</strong> —`;
+  }
 }
 
 async function measureApiLatency(){
