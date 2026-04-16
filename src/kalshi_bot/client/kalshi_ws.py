@@ -247,13 +247,13 @@ class KalshiOrderbookFeed:
     async def _handle_message(self, msg: dict[str, Any]) -> None:
         """Dispatch an incoming WebSocket message."""
         msg_type = msg.get("type")
-        if msg_type == "subscribed":
+        if msg_type == "orderbook_snapshot":
             self._apply_snapshot(msg.get("msg", {}))
         elif msg_type == "orderbook_delta":
             self._apply_delta(msg.get("msg", {}))
         elif msg_type == "error":
             logger.error("kalshi_ws_error msg=%s", msg)
-        # "subscriptions", "heartbeat", etc. are silently ignored.
+        # "subscribed", "subscriptions", "heartbeat", etc. are silently ignored.
 
     def _apply_snapshot(self, data: dict[str, Any]) -> None:
         """Build a full orderbook from a subscription snapshot.
