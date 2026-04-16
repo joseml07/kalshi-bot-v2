@@ -13,10 +13,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 
+from kalshi_bot.alerts.control import (
+    SettingError,
+    current_settings,
+    mutate_setting,
+    settable_keys,
+)
+from kalshi_bot.config import Settings
+from kalshi_bot.control_channel import (
+    activate_kill_switch,
+    deactivate_kill_switch,
+    enqueue,
+    kill_switch_active,
+)
 from kalshi_bot.execution.executor import DB_PATH
 
 app = FastAPI(title="Kalshi V2 — Momentum Bot Dashboard")
@@ -600,6 +613,111 @@ def api_trade_detail(trade_id: int) -> dict[str, Any]:
         "signal": signal,
         "lifecycle": lifecycle,
     }
+
+
+_settings_singleton: Settings | None = None
+
+
+def _settings() -> Settings:
+    global _settings_singleton
+    if _settings_singleton is None:
+        _settings_singleton = Settings()
+    return _settings_singleton
+
+
+def _require_admin(request: Request) -> None:
+    """Reject write requests without a valid admin key."""
+    expected = _settings().dashboard_admin_key
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="DASHBOARD_ADMIN_KEY is not configured; admin endpoints disabled",
+        )
+    provided = request.headers.get("X-Admin-Key", "")
+    if provided != expected:
+        raise HTTPException(status_code=401, detail="invalid admin key")
+
+
+@app.get("/api/balance")
+def api_balance() -> dict[str, Any]:
+    """Kalshi account balance + trading mode, read from live_state.json."""
+    live_path = Path("live_state.json")
+    if not live_path.exists():
+        return {"balance": None, "balance_age_s": None, "trading_mode": None}
+    with contextlib.suppress(Exception):
+        data = json.loads(live_path.read_text(encoding="utf-8"))
+        return {
+            "balance": data.get("balance"),
+            "balance_age_s": data.get("balance_age_s"),
+            "trading_mode": data.get("trading_mode"),
+            "kelly_fraction": data.get("kelly_fraction"),
+            "updated_at": data.get("updated_at"),
+        }
+    return {"balance": None, "balance_age_s": None, "trading_mode": None}
+
+
+@app.get("/api/settings")
+def api_settings_get() -> dict[str, Any]:
+    """Current runtime-mutable settings + keys the user can change."""
+    return {
+        "settings": current_settings(_settings()),
+        "allowed_keys": settable_keys(),
+    }
+
+
+@app.post("/api/settings")
+def api_settings_post(
+    request: Request,
+    body: dict[str, Any] = Body(...),  # noqa: B008
+) -> dict[str, Any]:
+    """Queue a setting change for the bot loop to apply."""
+    _require_admin(request)
+    key = body.get("key")
+    value = body.get("value")
+    if not isinstance(key, str):
+        raise HTTPException(status_code=400, detail="'key' must be a string")
+
+    # Validate immediately against the dashboard's own Settings copy so
+    # the user gets fast feedback; the bot applies the change via the queue.
+    try:
+        alias, coerced = mutate_setting(_settings(), key, value)
+    except SettingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    req_id = enqueue("set", {"key": alias, "value": coerced})
+    return {"ok": True, "request_id": req_id, "key": alias, "value": coerced}
+
+
+@app.post("/api/reset")
+def api_reset(
+    request: Request,
+    clear_pnl: bool = False,
+) -> dict[str, Any]:
+    """Queue a risk-state reset. Bot clears locked sides and cooldowns."""
+    _require_admin(request)
+    req_id = enqueue("reset", {"clear_pnl": bool(clear_pnl)})
+    return {"ok": True, "request_id": req_id, "clear_pnl": bool(clear_pnl)}
+
+
+@app.post("/api/kill")
+def api_kill(request: Request) -> dict[str, Any]:
+    """Activate the kill switch (blocks all new trades)."""
+    _require_admin(request)
+    activate_kill_switch()
+    return {"ok": True, "kill_switch_active": True}
+
+
+@app.post("/api/resume")
+def api_resume(request: Request) -> dict[str, Any]:
+    """Remove the kill switch."""
+    _require_admin(request)
+    existed = deactivate_kill_switch()
+    return {"ok": True, "kill_switch_active": False, "was_active": existed}
+
+
+@app.get("/api/kill_switch")
+def api_kill_switch_state() -> dict[str, Any]:
+    return {"kill_switch_active": kill_switch_active()}
 
 
 @app.get("/", response_class=HTMLResponse)

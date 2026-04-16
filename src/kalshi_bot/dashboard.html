@@ -276,21 +276,37 @@ pre.code {
             <span class="pill" id="riskDaily">Daily PnL: —</span>
             <span class="pill" id="riskPos">Open positions: —</span>
             <span class="pill" id="riskKill">Kill switch: —</span>
+            <span class="pill" id="riskMode">Mode: —</span>
           </div>
+          <div class="route-row" style="margin-top:8px">
+            <button id="btnKill" class="pill" style="cursor:pointer">Activate kill</button>
+            <button id="btnResume" class="pill" style="cursor:pointer">Resume</button>
+            <button id="btnReset" class="pill" style="cursor:pointer">Reset locks</button>
+            <button id="btnResetFull" class="pill" style="cursor:pointer">Reset locks + daily PnL</button>
+            <button id="btnAdminKey" class="pill" style="cursor:pointer">Set admin key…</button>
+          </div>
+          <div id="adminResult" class="health-list" style="margin-top:6px"></div>
           <div id="skipReasonBox" class="health-list"></div>
           <div class="chart-shell chart-wrap" style="margin-top:8px"><canvas id="dailyGauge"></canvas></div>
         </div>
       </section>
       <section class="section">
-        <h2>Signals feed</h2>
-        <div class="body table-wrap">
-          <table>
-            <thead><tr><th>Time</th><th>Action</th><th>Ticker</th><th>Side</th><th>Edge</th><th>Secs left</th></tr></thead>
-            <tbody id="signalRows"></tbody>
-          </table>
+        <h2>Settings editor</h2>
+        <div class="body">
+          <div id="settingsPanel" class="health-list">Loading…</div>
+          <div id="settingsMsg" class="health-list"></div>
         </div>
       </section>
     </div>
+    <section class="section" style="margin-top:12px">
+      <h2>Signals feed</h2>
+      <div class="body table-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>Action</th><th>Ticker</th><th>Side</th><th>Edge</th><th>Secs left</th></tr></thead>
+          <tbody id="signalRows"></tbody>
+        </table>
+      </div>
+    </section>
   </section>
 
   <p class="footer-note">WebSocket endpoint: <code>/ws/live</code> (SSE fallback retained on backend).</p>
@@ -399,7 +415,7 @@ function ensureChart(id, cfg){
   charts[id] = new Chart($(id).getContext('2d'), cfg);
 }
 
-function renderKpis(summary, stats){
+function renderKpis(summary, stats, balance){
   const wins = Number(summary.wins || 0);
   const losses = Number(summary.losses || 0);
   const totalTrades = Number(summary.total_trades || 0);
@@ -415,7 +431,15 @@ function renderKpis(summary, stats){
   const wr = Number((stats.win_rate||0) * 100);
   const wrCls = (stats.win_rate||0)>=0.5 ? 'pos' : 'neg';
 
+  const bal = balance && balance.balance != null ? Number(balance.balance) : null;
+  const mode = balance && balance.trading_mode ? String(balance.trading_mode).toUpperCase() : '—';
+  const modeCls = mode === 'LIVE' ? 'neg' : '';
+  const balCard = bal == null
+    ? ['Balance', '—', '', 'No live_state.json yet']
+    : ['Balance', `$${bal.toFixed(2)}`, '', `${mode} • Kelly ${(balance.kelly_fraction ?? 0.25)}`];
+
   const cards=[
+    balCard,
     ['Win rate', `${wr.toFixed(1)}%`, wrCls, `${wins}W • ${losses}L`],
     ['Open positions', `${(summary.open_positions||[]).length}`, '', `${(summary.total_in_positions||0).toFixed(2)}$ in market`],
     ['Avg P&L', fmtMoney(stats.avg_pnl||0), clsByVal(stats.avg_pnl||0), 'Per settled trade'],
@@ -427,7 +451,7 @@ function renderKpis(summary, stats){
 
   $('riskDaily').textContent = `Daily PnL: ${fmtMoney(pnl)}`;
   $('riskPos').textContent = `Open positions: ${(summary.open_positions||[]).length}`;
-  $('riskKill').textContent = `Kill switch: check /status on bot`; 
+  $('riskMode').textContent = `Mode: ${mode}`;
 }
 
 function renderSkipReasons(health){
@@ -614,7 +638,7 @@ function renderAnalyses(rows){
 
 async function loadStatic(){
   const q=viewAll?'?all=true':'';
-  const [summary,stats,pnl,routes,trades,signals,analyses,symbols,health] = await Promise.all([
+  const [summary,stats,pnl,routes,trades,signals,analyses,symbols,health,balance,settings,killState] = await Promise.all([
     fetch('/api/summary'+q).then(r=>r.json()),
     fetch('/api/stats'+q).then(r=>r.json()),
     fetch('/api/pnl_rolling'+q).then(r=>r.json()),
@@ -624,9 +648,12 @@ async function loadStatic(){
     fetch('/api/windows?limit=20').then(r=>r.json()),
     fetch('/api/stats_by_symbol'+q).then(r=>r.json()),
     fetch('/api/health').then(r=>r.json()),
+    fetch('/api/balance').then(r=>r.json()).catch(()=>({})),
+    fetch('/api/settings').then(r=>r.json()).catch(()=>({settings:{},allowed_keys:[]})),
+    fetch('/api/kill_switch').then(r=>r.json()).catch(()=>({kill_switch_active:false})),
   ]);
 
-  renderKpis(summary,stats);
+  renderKpis(summary,stats,balance);
   renderPnlChart(pnl||[]);
   renderRoutes(routes||[]);
   renderTrades(trades||[]);
@@ -636,6 +663,87 @@ async function loadStatic(){
   renderSymbolChart(symbols||[]);
   renderDailyGauge(summary.total_pnl||0);
   renderSkipReasons((health||{}).runtime||{});
+  renderSettings(settings);
+  renderKillState(killState);
+}
+
+function renderKillState(ks){
+  const active = Boolean(ks && ks.kill_switch_active);
+  const pill = $('riskKill');
+  if(pill){ pill.textContent = `Kill switch: ${active ? 'ACTIVE' : 'off'}`; pill.className = `pill ${active ? 'neg' : ''}`; }
+}
+
+function renderSettings(data){
+  const panel = $('settingsPanel');
+  if(!panel) return;
+  const s = (data && data.settings) || {};
+  const keys = (data && data.allowed_keys) || Object.keys(s);
+  if(!keys.length){ panel.innerHTML = '<div class="health-item">No settings available.</div>'; return; }
+  panel.innerHTML = keys.map(k => {
+    const v = s[k] ?? '';
+    return `<div class="health-item" style="gap:6px">
+      <strong>${k}</strong>
+      <input data-key="${k}" value="${String(v)}" style="flex:1;min-width:120px;background:#0b0f18;border:1px solid #1f2a3a;color:#cdd6e4;padding:4px 6px;border-radius:4px;font-family:inherit;font-size:12px"/>
+      <button class="pill settingsSave" data-key="${k}" style="cursor:pointer">Save</button>
+    </div>`;
+  }).join('');
+  panel.querySelectorAll('.settingsSave').forEach(btn => {
+    btn.addEventListener('click', async ()=>{
+      const key = btn.getAttribute('data-key');
+      const input = panel.querySelector(`input[data-key="${key}"]`);
+      await postAdmin('/api/settings', {key, value: input.value}, 'settingsMsg');
+    });
+  });
+}
+
+function getAdminKey(){ return localStorage.getItem('dashboardAdminKey') || ''; }
+function setAdminKey(k){ localStorage.setItem('dashboardAdminKey', k || ''); }
+
+async function postAdmin(url, body, msgElId){
+  const key = getAdminKey();
+  if(!key){
+    const k = prompt('Enter dashboard admin key (stored locally only):');
+    if(!k) return;
+    setAdminKey(k);
+  }
+  const msgEl = msgElId ? $(msgElId) : null;
+  if(msgEl) msgEl.innerHTML = '<div class="health-item">Sending…</div>';
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'X-Admin-Key': getAdminKey()},
+      body: body ? JSON.stringify(body) : '{}',
+    });
+    const data = await resp.json().catch(()=>({}));
+    if(!resp.ok){
+      if(msgEl) msgEl.innerHTML = `<div class="health-item neg"><strong>Error ${resp.status}</strong>${data.detail || 'Request failed'}</div>`;
+      if(resp.status === 401) setAdminKey('');
+      return;
+    }
+    if(msgEl) msgEl.innerHTML = `<div class="health-item pos"><strong>OK</strong>${JSON.stringify(data)}</div>`;
+    loadStatic().catch(()=>{});
+  } catch(e){
+    if(msgEl) msgEl.innerHTML = `<div class="health-item neg"><strong>Network error</strong>${String(e)}</div>`;
+  }
+}
+
+function bindAdminButtons(){
+  const map = [
+    ['btnKill', '/api/kill', null],
+    ['btnResume', '/api/resume', null],
+    ['btnReset', '/api/reset', null],
+    ['btnResetFull', '/api/reset?clear_pnl=true', null],
+  ];
+  for(const [id, url, body] of map){
+    const el = $(id);
+    if(el) el.onclick = ()=> postAdmin(url, body, 'adminResult');
+  }
+  const k = $('btnAdminKey');
+  if(k) k.onclick = ()=>{
+    const cur = getAdminKey();
+    const v = prompt('Dashboard admin key (stored in localStorage):', cur);
+    if(v !== null) setAdminKey(v);
+  };
 }
 
 function connectLiveWebSocket(){
@@ -648,6 +756,7 @@ function connectLiveWebSocket(){
 }
 
 connectLiveWebSocket();
+bindAdminButtons();
 loadStatic();
 measureApiLatency();
 setInterval(loadStatic, 12000);

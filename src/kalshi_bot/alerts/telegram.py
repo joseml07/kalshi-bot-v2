@@ -526,54 +526,22 @@ def make_config_command(settings: Any) -> CommandHandler:
     return handler
 
 
-_SETTABLE: dict[str, type] = {
-    "edge_threshold": float,
-    "exit_stop_loss": float,
-    "min_time": int,
-    "max_time": int,
-    "logistic_k": float,
-    "symbols": str,
-    "min_price": float,
-    "max_price": float,
-    "maker_first": bool,
-    "maker_fill_horizon_s": int,
-}
-
-_SETTING_MAP: dict[str, str] = {
-    "edge_threshold": "edge_threshold",
-    "exit_stop_loss": "exit_stop_loss",
-    "min_time": "momentum_min_time",
-    "max_time": "momentum_max_time",
-    "logistic_k": "logistic_k",
-    "symbols": "symbols",
-    "min_price": "min_trade_price",
-    "max_price": "max_trade_price",
-    "maker_first": "maker_first",
-    "maker_fill_horizon_s": "maker_fill_horizon_s",
-}
-
-
 def make_set_command(settings: Any) -> ArgCommandHandler:
+    from kalshi_bot.alerts.control import SettingError, mutate_setting, settable_keys
+
     async def handler(args: list[str]) -> str:
         if len(args) < 2:
-            return "Usage: /set &lt;key&gt; &lt;value&gt;\nSettable keys: " + ", ".join(_SETTABLE)
+            return (
+                "Usage: /set &lt;key&gt; &lt;value&gt;\nSettable keys: "
+                + ", ".join(settable_keys())
+            )
 
-        key, raw_value = args[0].lower(), args[1]
-        if key not in _SETTABLE:
-            return f"Unknown key '{key}'. Settable: " + ", ".join(_SETTABLE)
-
-        cast = _SETTABLE[key]
+        key, raw_value = args[0], args[1]
         try:
-            if cast is bool:
-                value: bool | int | float | str = raw_value.lower() in ("true", "1", "yes", "on")
-            else:
-                value = cast(raw_value)
-        except ValueError:
-            return f"Invalid value '{raw_value}' for {key} (expected {cast.__name__})"
-
-        attr = _SETTING_MAP[key]
-        object.__setattr__(settings, attr, value)
-        return f"Set {key} = {value}"
+            alias, value = mutate_setting(settings, key, raw_value)
+        except SettingError as exc:
+            return str(exc)
+        return f"Set {alias} = {value}"
 
     return handler
 
@@ -656,6 +624,27 @@ def make_resume_command() -> CommandHandler:
             ks.unlink()
             return "<b>Kill switch removed</b>\nTrading resumed."
         return "Kill switch was not active."
+
+    return handler
+
+
+def make_reset_command(risk: Any) -> ArgCommandHandler:
+    """Clear in-memory risk state (locked sides + cooldowns).
+
+    Usage: /reset → clear locks only; /reset pnl → also reset daily P&L.
+    """
+
+    async def handler(args: list[str]) -> str:
+        clear_pnl = any(a.lower() in ("pnl", "full", "all") for a in args)
+        result = risk.reset_session(clear_pnl=clear_pnl)
+        parts = [
+            f"Cleared {result['cleared_locked_sides']} locked sides",
+            f"{result['cleared_cooldowns']} cooldowns",
+        ]
+        if clear_pnl:
+            parts.append("reset daily P&amp;L")
+        parts.append(f"open positions: {result['open_positions']}")
+        return "<b>Risk state reset</b>\n" + ", ".join(parts)
 
     return handler
 

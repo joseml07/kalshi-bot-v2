@@ -11,8 +11,9 @@ from decimal import Decimal
 from enum import Enum
 
 from kalshi_bot.client.kalshi import KalshiClient
+from kalshi_bot.config import Settings
 from kalshi_bot.risk.manager import RiskManager
-from kalshi_bot.risk.sizing import quarter_kelly_size
+from kalshi_bot.risk.sizing import DEFAULT_KELLY_FRACTION, kelly_size
 from kalshi_bot.strategy.fees import maker_fee, taker_fee
 from kalshi_bot.strategy.signals import Signal
 
@@ -77,12 +78,14 @@ class Executor:
         *,
         dry_run: bool = False,
         db_path: str = DB_PATH,
+        settings: Settings | None = None,
     ) -> None:
         self._client = client
         self._risk = risk
         self._dry_run = dry_run
         self._orders: dict[str, TrackedOrder] = {}
         self._db = _init_db(db_path)
+        self._settings = settings
 
     async def submit(self, signal: Signal, bankroll: Decimal) -> TrackedOrder | None:
         """Size, place, and track an order for the given signal.
@@ -94,7 +97,12 @@ class Executor:
         win_prob = (
             signal.real_prob if signal.side.value == "yes" else 1 - signal.real_prob
         )
-        contracts = quarter_kelly_size(win_prob, price, bankroll)
+        fraction = (
+            self._settings.kelly_fraction
+            if self._settings is not None
+            else DEFAULT_KELLY_FRACTION
+        )
+        contracts = kelly_size(win_prob, price, bankroll, fraction=fraction)
         if contracts == 0:
             logger.debug("Sizing returned 0 contracts for %s — skipping", signal.ticker)
             return None

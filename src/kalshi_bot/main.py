@@ -28,6 +28,7 @@ from kalshi_bot.alerts.discord_bot import (
     make_newsession_command as make_discord_newsession_command,
     make_pnl_command as make_discord_pnl_command,
     make_positions_command as make_discord_positions_command,
+    make_reset_command as make_discord_reset_command,
     make_resume_command as make_discord_resume_command,
     make_set_command as make_discord_set_command,
     make_signals_command as make_discord_signals_command,
@@ -49,6 +50,7 @@ from kalshi_bot.alerts.telegram import (
     make_newsession_command,
     make_pnl_command,
     make_positions_command,
+    make_reset_command,
     make_resume_command,
     make_set_command,
     make_signals_command,
@@ -59,12 +61,14 @@ from kalshi_bot.alerts.telegram import (
     make_trades_command,
     make_window_command,
 )
+from kalshi_bot.alerts.control import SettingError, mutate_setting
 from kalshi_bot.analysis.window_analyzer import analyze_window
 from kalshi_bot.client.coinbase import CoinbaseFeed
 from kalshi_bot.client.kalshi import KalshiClient
 from kalshi_bot.client.kalshi_ws import KalshiOrderbookFeed
 from kalshi_bot.client.openrouter import OpenRouterClient
 from kalshi_bot.config import Settings
+from kalshi_bot.control_channel import drain as drain_control_queue
 from kalshi_bot.data.recorder import DataRecorder
 from kalshi_bot.data.window_tracker import WindowState, WindowTracker
 from kalshi_bot.execution.executor import Executor
@@ -185,6 +189,27 @@ def _write_live_state(live_state: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _drain_control_requests(settings: Settings, risk: RiskManager) -> None:
+    """Apply queued control requests from the dashboard process."""
+    for req in drain_control_queue():
+        req_type = req.get("type")
+        payload = req.get("payload", {}) or {}
+        if req_type == "set":
+            key = str(payload.get("key", ""))
+            value = payload.get("value")
+            try:
+                alias, coerced = mutate_setting(settings, key, value)
+                logger.info("control_set", key=alias, value=coerced)
+            except SettingError as exc:
+                logger.warning("control_set_rejected", key=key, error=str(exc))
+        elif req_type == "reset":
+            clear_pnl = bool(payload.get("clear_pnl", False))
+            result = risk.reset_session(clear_pnl=clear_pnl)
+            logger.info("control_reset", **result)
+        else:
+            logger.warning("control_unknown_request", type=req_type)
+
+
 def _make_alerter(
     settings: Settings,
 ) -> MultiAlerter:
@@ -245,6 +270,7 @@ def _register_commands(
     alerter.register("cleardata", make_cleardata_command())
     alerter.register("ip", make_ip_command())
     alerter.register_with_args("set", make_set_command(settings))
+    alerter.register_with_args("reset", make_reset_command(risk))
 
 
 def _register_discord_commands(
@@ -275,6 +301,7 @@ def _register_discord_commands(
     alerter.register("ip", make_discord_ip_command())
     alerter.register("newsession", make_discord_newsession_command())
     alerter.register_with_args("set", make_discord_set_command(settings))
+    alerter.register_with_args("reset", make_discord_reset_command(risk))
     alerter.register_default_slash_commands()
 
 
@@ -319,7 +346,7 @@ async def run_bot(settings: Settings) -> None:
 
     client = KalshiClient(settings)
     risk = RiskManager(settings)
-    executor = Executor(client, risk, dry_run=dry_run)
+    executor = Executor(client, risk, dry_run=dry_run, settings=settings)
     tracker = WindowTracker()
     recorder = DataRecorder()
     cached = CachedState()
@@ -499,6 +526,8 @@ async def _fast_eval_loop(
             pass
         eval_trigger.clear()
 
+        _drain_control_requests(settings, risk)
+
         symbols = cached.active_symbols or {
             s.strip() for s in settings.symbols.split(",") if s.strip()
         }
@@ -621,10 +650,20 @@ async def _slow_housekeeping_loop(
             if ws_feed is not None:
                 await ws_feed.set_tickers(active_tickers)
 
+            balance_age_s: float | None = None
+            if cached._balance_refreshed_mono > 0:
+                balance_age_s = max(
+                    0.0, time.monotonic() - cached._balance_refreshed_mono
+                )
+
             live_state: dict[str, Any] = {
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "daily_pnl": float(risk.daily_pnl),
                 "open_positions": risk.open_position_count,
+                "balance": float(cached.balance),
+                "balance_age_s": balance_age_s,
+                "trading_mode": settings.trading_mode,
+                "kelly_fraction": settings.kelly_fraction,
                 "symbols": {},
                 "health": {},
             }

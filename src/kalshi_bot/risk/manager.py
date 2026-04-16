@@ -65,6 +65,38 @@ class RiskManager:
         self._daily_pnl += pnl
         logger.info("Settlement %s pnl=%s daily_pnl=%s", ticker, pnl, self._daily_pnl)
 
+    def reset_session(self, clear_pnl: bool = False) -> dict[str, int]:
+        """Clear in-memory risk state so the bot can re-enter tickers.
+
+        Clears `_locked_sides` and `_cooldowns` so tickers traded earlier in
+        the session can be re-entered. Optionally also resets `_daily_pnl`.
+        Does NOT clear `_open_position_tickers` — actual open positions must
+        be settled, not forgotten.
+
+        Returns a dict summarising what was cleared.
+        """
+        cleared_sides = len(self._locked_sides)
+        cleared_cooldowns = len(self._cooldowns)
+        self._locked_sides.clear()
+        self._cooldowns.clear()
+        cleared_pnl = 0
+        if clear_pnl:
+            cleared_pnl = 1 if self._daily_pnl != Decimal("0") else 0
+            self._daily_pnl = Decimal("0")
+            self._pnl_date = _today()
+        logger.info(
+            "reset_session cleared_sides=%d cleared_cooldowns=%d clear_pnl=%s",
+            cleared_sides,
+            cleared_cooldowns,
+            clear_pnl,
+        )
+        return {
+            "cleared_locked_sides": cleared_sides,
+            "cleared_cooldowns": cleared_cooldowns,
+            "cleared_pnl": cleared_pnl,
+            "open_positions": len(self._open_position_tickers),
+        }
+
     def sync_positions(self, positions: list[dict[str, Any]]) -> None:
         """Sync open positions from Kalshi API response."""
         self._open_position_tickers = {

@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     daily_loss_limit: float = Field(default=25.0)
     max_per_trade: float = Field(default=25.0)
     max_concurrent_positions: int = Field(default=3)
+    kelly_fraction: float = Field(default=0.25, ge=0.01, le=1.0)
 
     # Momentum strategy
     edge_threshold: float = Field(default=0.06)
@@ -61,6 +62,9 @@ class Settings(BaseSettings):
 
     # Discord webhook (optional)
     discord_webhook_url: str = Field(default="")
+
+    # Dashboard admin key (gates write endpoints: /api/reset, /api/kill, /api/settings)
+    dashboard_admin_key: str = Field(default="")
 
     @property
     def rest_base_url(self) -> str:
