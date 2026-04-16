@@ -210,6 +210,20 @@ class DiscordBotAlerter:
                 return
             await _send_text(interaction, await handler([key, value]))
 
+        @self._tree.command(
+            name="reset",
+            description="Clear locked sides + cooldowns (add 'pnl' to also reset daily P&L)",
+        )
+        @app_commands.describe(mode="'locks' (default) or 'pnl' to also clear daily P&L")
+        async def reset_cmd(
+            interaction: discord.Interaction, mode: str = "locks"
+        ) -> None:
+            handler = self._arg_commands.get("reset")
+            if handler is None:
+                await _send_text(interaction, "reset command not registered.")
+                return
+            await _send_text(interaction, await handler([mode]))
+
         @self._tree.command(name="chart", description="Render a performance chart")
         @app_commands.describe(
             kind="One of: pnl, winrate, scatter, routes, edge, daily",

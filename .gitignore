@@ -9,3 +9,6 @@ live_state.json
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+logs/
+vpsdata/
+control_queue.json
