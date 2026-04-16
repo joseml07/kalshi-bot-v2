@@ -293,7 +293,7 @@ class KalshiOrderbookFeed:
         self._last_update_mono = time.monotonic()
         if self._eval_trigger is not None:
             self._eval_trigger.set()
-        logger.debug(
+        logger.info(
             "kalshi_ws_snapshot ticker=%s yes_levels=%d no_levels=%d",
             ticker,
             len(yes_map),
