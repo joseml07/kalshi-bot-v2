@@ -56,6 +56,15 @@ class RiskManager:
         if side:
             self._locked_sides[ticker] = side.lower()
 
+    def release_reservation(self, ticker: str) -> None:
+        """Undo a record_fill reservation when the order never reached Kalshi.
+
+        Called by the executor if place_order raised before returning an
+        order_id — the ticker must not stay locked or the window is burned.
+        """
+        self._open_position_tickers.discard(ticker)
+        self._locked_sides.pop(ticker, None)
+
     def record_settlement(self, ticker: str, pnl: Decimal) -> None:
         """Record a settled position and its P&L."""
         self._open_position_tickers.discard(ticker)

@@ -11,4 +11,5 @@ live_state.json
 .pytest_cache/
 logs/
 vpsdata/
+weird_behaviour/
 control_queue.json

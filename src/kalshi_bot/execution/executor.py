@@ -131,13 +131,23 @@ class Executor:
             self._log_trade(signal, order_id, contracts, signal.kalshi_price, None)
             return tracked
 
-        order_resp = await self._client.place_order(
-            ticker=signal.ticker,
-            action="buy",
-            side=signal.side.value,
-            price_dollars=signal.kalshi_price,
-            count=contracts,
-        )
+        # Reserve the ticker BEFORE awaiting place_order. If we wait until
+        # the order_id comes back, a concurrent eval tick can slip past the
+        # risk gate and submit a duplicate order while we're still awaiting
+        # the HTTP response — the 2026-04-16 live incident placed ~25
+        # duplicate orders against a single signal for exactly this reason.
+        self._risk.record_fill(signal.ticker, side=signal.side.value)
+        try:
+            order_resp = await self._client.place_order(
+                ticker=signal.ticker,
+                action="buy",
+                side=signal.side.value,
+                price_dollars=signal.kalshi_price,
+                count=contracts,
+            )
+        except Exception:
+            self._risk.release_reservation(signal.ticker)
+            raise
         order_id = str(order_resp["order_id"])
         tracked = TrackedOrder(
             signal=signal,
