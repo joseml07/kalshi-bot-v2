@@ -75,6 +75,16 @@ class DiscordWebhookAlerter:
             f"P&L: {sign}${pnl}"
         )
 
+    async def trade_failed(
+        self, ticker: str, side: str, contracts: int, reason: str
+    ) -> None:
+        await self._send(
+            "⚠️ **Trade didn't go through**\n"
+            f"Ticker: `{ticker}`\n"
+            f"Side: **{side.upper()}** x{contracts}\n"
+            f"Reason: {reason}"
+        )
+
     async def window_analyzed(
         self,
         symbol: str,

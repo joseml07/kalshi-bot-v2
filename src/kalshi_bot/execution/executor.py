@@ -200,8 +200,11 @@ class Executor:
                     order.price,
                 )
 
-    async def promote_to_taker(self) -> None:
-        """Cancel maker orders past their fill horizon and re-place as taker."""
+    async def promote_to_taker(self) -> list[TrackedOrder]:
+        """Cancel maker orders past their fill horizon and re-place as taker.
+
+        Returns orders whose taker promotion failed (so callers can alert).
+        """
         now = time.monotonic()
         to_promote: list[str] = []
         for oid, order in self._orders.items():
@@ -215,6 +218,7 @@ class Executor:
                 continue
             to_promote.append(oid)
 
+        failed: list[TrackedOrder] = []
         for oid in to_promote:
             order = self._orders[oid]
             if oid.startswith("PAPER-"):
@@ -270,12 +274,18 @@ class Executor:
             except Exception:
                 logger.exception("Taker promotion failed for %s", oid)
                 self._risk.record_settlement(order.signal.ticker, Decimal("0"))
+                failed.append(order)
+        return failed
 
-    async def cancel_stale(self) -> None:
+    async def cancel_stale(self) -> list[TrackedOrder]:
         """Cancel orders that have been pending longer than ORDER_TIMEOUT_SECONDS.
 
         If the cancel returns 404 (order already filled), mark as filled
         instead of cancelled — do NOT remove from risk tracker.
+
+        Returns the list of orders that were cancelled because they never
+        filled, so callers can send user-facing "trade didn't go through"
+        alerts.
         """
         now = time.monotonic()
         to_cancel: list[str] = []
@@ -288,6 +298,7 @@ class Executor:
             ):
                 to_cancel.append(oid)
 
+        cancelled: list[TrackedOrder] = []
         for oid in to_cancel:
             order = self._orders[oid]
             try:
@@ -296,6 +307,7 @@ class Executor:
                 self._risk.record_settlement(order.signal.ticker, Decimal("0"))
                 self._update_trade_pnl(oid, Decimal("0"))
                 logger.info("Cancelled stale order %s (%s)", oid, order.signal.ticker)
+                cancelled.append(order)
             except Exception:
                 order.state = OrderState.FILLED
                 order.fill_time = order.placed_at
@@ -307,6 +319,7 @@ class Executor:
                     oid,
                     order.signal.ticker,
                 )
+        return cancelled
 
     def record_settlement(self, ticker: str, result: str) -> None:
         """Record that a market settled. Update P&L for matching orders."""

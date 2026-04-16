@@ -79,10 +79,12 @@ def api_trades(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
 @app.get("/api/summary")
 def api_summary(all: bool = False) -> dict[str, Any]:  # noqa: A002
     ss = None if all else _session_start()
-    where = "WHERE 1=1"
+    # Exclude cancel_stale rows (pnl='0' AND fees IS NULL) — those orders
+    # never filled, so they shouldn't count toward trade stats.
+    where = "WHERE NOT (pnl = '0' AND fees IS NULL)"
     params: tuple[Any, ...] = ()
     if ss:
-        where = "WHERE timestamp >= ?"
+        where = "WHERE timestamp >= ? AND NOT (pnl = '0' AND fees IS NULL)"
         params = (ss,)
     rows = _query(
         f"""SELECT

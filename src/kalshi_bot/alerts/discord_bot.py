@@ -338,6 +338,15 @@ class DiscordBotAlerter:
         embed.add_field(name="PnL", value=f"{sign}${pnl}", inline=True)
         await self._send("", embed)
 
+    async def trade_failed(
+        self, ticker: str, side: str, contracts: int, reason: str
+    ) -> None:
+        embed = discord.Embed(title="Trade didn't go through", color=0xD29922)
+        embed.add_field(name="Ticker", value=ticker, inline=True)
+        embed.add_field(name="Side", value=f"{side.upper()} x{contracts}", inline=True)
+        embed.add_field(name="Reason", value=reason, inline=False)
+        await self._send("", embed)
+
     async def window_analyzed(
         self,
         symbol: str,

@@ -59,6 +59,17 @@ class MultiAlerter:
             )
         )
 
+    async def trade_failed(
+        self, ticker: str, side: str, contracts: int, reason: str
+    ) -> None:
+        await asyncio.gather(
+            *(
+                a.trade_failed(ticker, side, contracts, reason)
+                for a in self.alerters
+                if hasattr(a, "trade_failed")
+            )
+        )
+
     async def window_analyzed(self, *args: Any, **kwargs: Any) -> None:
         await asyncio.gather(
             *(

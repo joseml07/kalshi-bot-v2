@@ -222,6 +222,18 @@ class TelegramAlerter:
         await self._send(text)
         await self._send_discord(text)
 
+    async def trade_failed(
+        self, ticker: str, side: str, contracts: int, reason: str
+    ) -> None:
+        text = (
+            f"<b>Trade didn't go through</b>\n"
+            f"Ticker: <code>{ticker}</code>\n"
+            f"Side: {side.upper()} x{contracts}\n"
+            f"Reason: {reason}"
+        )
+        await self._send(text)
+        await self._send_discord(text)
+
     async def window_analyzed(
         self,
         symbol: str,

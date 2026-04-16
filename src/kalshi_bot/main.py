@@ -631,8 +631,23 @@ async def _slow_housekeeping_loop(
     while not shutdown.is_set():
         try:
             await executor.check_pending_fills()
-            await executor.promote_to_taker()
-            await executor.cancel_stale()
+            promotion_failures = await executor.promote_to_taker()
+            stale_cancels = await executor.cancel_stale()
+            if alerter is not None:
+                for order in stale_cancels:
+                    await alerter.trade_failed(
+                        order.signal.ticker,
+                        order.signal.side.value,
+                        order.contracts,
+                        "order not filled within timeout — cancelled",
+                    )
+                for order in promotion_failures:
+                    await alerter.trade_failed(
+                        order.signal.ticker,
+                        order.signal.side.value,
+                        order.contracts,
+                        "maker timed out and taker promotion failed",
+                    )
 
             if executor._dry_run:
                 await _settle_paper_positions(executor, tracker, alerter)
