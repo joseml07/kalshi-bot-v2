@@ -35,6 +35,9 @@ _RECONNECT_BACKOFF = 3.0
 # Alias: maps integer cent prices → resting quantity.
 _LevelMap = dict[int, int]
 
+# If we observe too many malformed deltas for a ticker, force resubscribe.
+_ANOMALY_RESYNC_THRESHOLD = 5
+
 
 @dataclass
 class _BookState:
@@ -108,6 +111,8 @@ class KalshiOrderbookFeed:
         # Signals _stream_loop that _tickers changed and a resubscribe is needed.
         self._resubscribe_event = asyncio.Event()
         self._last_update_mono: float | None = None
+        self._anomaly_counts: dict[str, int] = {}
+        self._last_seq_by_sid: dict[int, int] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -189,6 +194,7 @@ class KalshiOrderbookFeed:
         headers = self._auth_headers()
         async with ws_legacy.connect(self._ws_url, extra_headers=headers) as ws:
             self._ws = ws
+            self._last_seq_by_sid.clear()
             logger.info("kalshi_ws_connected url=%s", self._ws_url)
 
             # Subscribe to whatever tickers are active right now.
@@ -247,6 +253,26 @@ class KalshiOrderbookFeed:
     async def _handle_message(self, msg: dict[str, Any]) -> None:
         """Dispatch an incoming WebSocket message."""
         msg_type = msg.get("type")
+        sid = msg.get("sid")
+        seq = msg.get("seq")
+        if isinstance(sid, int) and isinstance(seq, int):
+            prev = self._last_seq_by_sid.get(sid)
+            if prev is not None:
+                if seq <= prev:
+                    return
+                if seq > prev + 1 and msg_type != "orderbook_snapshot":
+                    logger.warning(
+                        "kalshi_ws_sequence_gap sid=%s prev=%s seq=%s",
+                        sid,
+                        prev,
+                        seq,
+                    )
+                    self._schedule_full_resync(
+                        f"sequence_gap sid={sid} prev={prev} seq={seq}"
+                    )
+                    return
+            self._last_seq_by_sid[sid] = seq
+
         if msg_type == "orderbook_snapshot":
             self._apply_snapshot(msg.get("msg", {}))
         elif msg_type == "orderbook_delta":
@@ -254,7 +280,9 @@ class KalshiOrderbookFeed:
         elif msg_type == "error":
             logger.error("kalshi_ws_error msg=%s", msg)
         else:
-            logger.debug("kalshi_ws_unhandled type=%s keys=%s", msg_type, list(msg.keys()))
+            logger.debug(
+                "kalshi_ws_unhandled type=%s keys=%s", msg_type, list(msg.keys())
+            )
 
     def _apply_snapshot(self, data: dict[str, Any]) -> None:
         """Build a full orderbook from a subscription snapshot.
@@ -274,15 +302,24 @@ class KalshiOrderbookFeed:
         if not ticker:
             return
 
+        yes_entries = data.get("yes") or data.get("yes_dollars_fp") or []
+        no_entries = data.get("no") or data.get("no_dollars_fp") or []
+
         yes_map: _LevelMap = {}
-        for entry in data.get("yes", []):
-            cents, qty = int(entry[0]), int(entry[1])
+        for entry in yes_entries:
+            cents, qty = _parse_snapshot_entry(entry)
+            if cents is None or qty is None:
+                self._mark_anomaly(ticker, "snapshot_yes_parse")
+                continue
             if qty > 0:
                 yes_map[cents] = qty
 
         no_map: _LevelMap = {}
-        for entry in data.get("no", []):
-            cents, qty = int(entry[0]), int(entry[1])
+        for entry in no_entries:
+            cents, qty = _parse_snapshot_entry(entry)
+            if cents is None or qty is None:
+                self._mark_anomaly(ticker, "snapshot_no_parse")
+                continue
             if qty > 0:
                 no_map[cents] = qty
 
@@ -291,6 +328,7 @@ class KalshiOrderbookFeed:
             no=no_map,
             updated_at=datetime.now(timezone.utc),
         )
+        self._anomaly_counts[ticker] = 0
         self._last_update_mono = time.monotonic()
         if self._eval_trigger is not None:
             self._eval_trigger.set()
@@ -319,24 +357,29 @@ class KalshiOrderbookFeed:
             return
 
         side: str = data.get("side", "")
+        if side not in ("yes", "no"):
+            logger.warning("kalshi_ws_delta_bad_side ticker=%s side=%s", ticker, side)
+            self._mark_anomaly(ticker, "bad_side")
+            return
 
         # Support both field names: "price"/"delta" and "price_dollars"/"delta_fp"
         raw_price = data.get("price") or data.get("price_dollars")
         raw_delta = data.get("delta") or data.get("delta_fp")
 
         if raw_price is None or raw_delta is None:
-            logger.warning("kalshi_ws_delta_missing_fields ticker=%s keys=%s", ticker, list(data.keys()))
+            logger.warning(
+                "kalshi_ws_delta_missing_fields ticker=%s keys=%s",
+                ticker,
+                list(data.keys()),
+            )
+            self._mark_anomaly(ticker, "missing_fields")
             return
 
-        try:
-            if "." in str(raw_price):
-                price_cents = int(round(float(raw_price) * 100))
-            else:
-                price_cents = int(raw_price)
-
-            delta: int = int(float(raw_delta))
-        except (ValueError, TypeError) as e:
-            logger.error("kalshi_ws_delta_parse_error ticker=%s data=%s error=%s", ticker, data, str(e))
+        price_cents = _parse_price_to_cents(raw_price)
+        delta = _parse_quantity_to_int(raw_delta)
+        if price_cents is None or delta is None:
+            logger.error("kalshi_ws_delta_parse_error ticker=%s data=%s", ticker, data)
+            self._mark_anomaly(ticker, "parse_error")
             return
 
         book = state.yes if side == "yes" else state.no
@@ -352,13 +395,35 @@ class KalshiOrderbookFeed:
                     price_cents,
                     new_qty,
                 )
+                self._mark_anomaly(ticker, "negative_qty")
         else:
             book[price_cents] = new_qty
+            self._anomaly_counts[ticker] = 0
 
         state.updated_at = datetime.now(timezone.utc)
         self._last_update_mono = time.monotonic()
         if self._eval_trigger is not None:
             self._eval_trigger.set()
+
+    def _mark_anomaly(self, ticker: str, reason: str) -> None:
+        """Track WS anomalies and force resubscribe if persistent."""
+        count = self._anomaly_counts.get(ticker, 0) + 1
+        self._anomaly_counts[ticker] = count
+        if count >= _ANOMALY_RESYNC_THRESHOLD:
+            self._anomaly_counts[ticker] = 0
+            self._schedule_ticker_resync(ticker, reason)
+
+    def _schedule_ticker_resync(self, ticker: str, reason: str) -> None:
+        """Clear one ticker book and request fresh snapshot(s)."""
+        self._books.pop(ticker, None)
+        self._resubscribe_event.set()
+        logger.warning("kalshi_ws_resync_ticker ticker=%s reason=%s", ticker, reason)
+
+    def _schedule_full_resync(self, reason: str) -> None:
+        """Clear all books and request fresh snapshots for active tickers."""
+        self._books.clear()
+        self._resubscribe_event.set()
+        logger.warning("kalshi_ws_resync_full reason=%s", reason)
 
     @property
     def last_update_age_s(self) -> float | None:
@@ -366,3 +431,36 @@ class KalshiOrderbookFeed:
         if self._last_update_mono is None:
             return None
         return max(0.0, time.monotonic() - self._last_update_mono)
+
+
+def _parse_price_to_cents(raw_price: Any) -> int | None:
+    """Parse WS price field to integer cents.
+
+    Accepts both legacy cent integers ("45") and dollar strings ("0.45").
+    """
+    try:
+        value = float(raw_price)
+    except (TypeError, ValueError):
+        return None
+    if value < 0:
+        return None
+    if value <= 1.0:
+        return int(round(value * 100))
+    return int(round(value))
+
+
+def _parse_quantity_to_int(raw_qty: Any) -> int | None:
+    """Parse WS quantity/delta fields to integer contracts."""
+    try:
+        return int(round(float(raw_qty)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_snapshot_entry(entry: Any) -> tuple[int | None, int | None]:
+    """Parse one snapshot level entry [price, qty]."""
+    if not isinstance(entry, list) or len(entry) < 2:
+        return None, None
+    cents = _parse_price_to_cents(entry[0])
+    qty = _parse_quantity_to_int(entry[1])
+    return cents, qty
