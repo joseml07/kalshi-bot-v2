@@ -319,13 +319,25 @@ class KalshiOrderbookFeed:
             return
 
         side: str = data.get("side", "")
-        raw_price = data.get("price")
-        raw_delta = data.get("delta")
+
+        # Support both field names: "price"/"delta" and "price_dollars"/"delta_fp"
+        raw_price = data.get("price") or data.get("price_dollars")
+        raw_delta = data.get("delta") or data.get("delta_fp")
+
         if raw_price is None or raw_delta is None:
             logger.warning("kalshi_ws_delta_missing_fields ticker=%s keys=%s", ticker, list(data.keys()))
             return
-        price_cents: int = int(raw_price)
-        delta: int = int(raw_delta)
+
+        try:
+            if "." in str(raw_price):
+                price_cents = int(round(float(raw_price) * 100))
+            else:
+                price_cents = int(raw_price)
+
+            delta: int = int(float(raw_delta))
+        except (ValueError, TypeError) as e:
+            logger.error("kalshi_ws_delta_parse_error ticker=%s data=%s error=%s", ticker, data, str(e))
+            return
 
         book = state.yes if side == "yes" else state.no
         new_qty = book.get(price_cents, 0) + delta
