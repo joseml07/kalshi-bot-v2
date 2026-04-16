@@ -96,11 +96,15 @@ def api_summary(all: bool = False) -> dict[str, Any]:  # noqa: A002
     )
     summary = rows[0] if rows else {}
 
+    # Open position = placed and not yet finalized. cancel_stale writes
+    # pnl='0' with fees=NULL for orders that timed out without filling;
+    # those are NOT positions, so we exclude them by requiring BOTH pnl
+    # and fees to be NULL (the state between _log_trade and settle/exit).
     open_rows = _query(
         """SELECT ticker, side, SUM(contracts) as qty,
                   SUM(CAST(price AS REAL) * contracts) as cost
            FROM trades
-           WHERE pnl IS NULL OR pnl = '0'
+           WHERE pnl IS NULL AND fees IS NULL
            GROUP BY ticker, side"""
     )
     summary["open_positions"] = open_rows
@@ -601,10 +605,21 @@ def api_trade_detail(trade_id: int) -> dict[str, Any]:
     )
     signal = sig_rows[0] if sig_rows else None
 
+    # cancel_stale writes pnl='0' with fees=NULL on timeout — NOT a real
+    # settlement. A real settle/exit writes both pnl AND fees.
+    pnl_raw = trade.get("pnl")
+    fees_raw = trade.get("fees")
+    if pnl_raw is None:
+        status = "pending"
+    elif fees_raw is None:
+        status = "cancelled"
+    else:
+        status = "settled"
     lifecycle = {
         "placed_at": trade.get("timestamp"),
         "route": trade.get("route"),
-        "settled": trade.get("pnl") is not None,
+        "status": status,
+        "settled": status == "settled",
     }
 
     return {
