@@ -253,7 +253,8 @@ class KalshiOrderbookFeed:
             self._apply_delta(msg.get("msg", {}))
         elif msg_type == "error":
             logger.error("kalshi_ws_error msg=%s", msg)
-        # "subscribed", "subscriptions", "heartbeat", etc. are silently ignored.
+        else:
+            logger.debug("kalshi_ws_unhandled type=%s keys=%s", msg_type, list(msg.keys()))
 
     def _apply_snapshot(self, data: dict[str, Any]) -> None:
         """Build a full orderbook from a subscription snapshot.
@@ -318,8 +319,13 @@ class KalshiOrderbookFeed:
             return
 
         side: str = data.get("side", "")
-        price_cents: int = int(data["price"])
-        delta: int = int(data["delta"])
+        raw_price = data.get("price")
+        raw_delta = data.get("delta")
+        if raw_price is None or raw_delta is None:
+            logger.warning("kalshi_ws_delta_missing_fields ticker=%s keys=%s", ticker, list(data.keys()))
+            return
+        price_cents: int = int(raw_price)
+        delta: int = int(raw_delta)
 
         book = state.yes if side == "yes" else state.no
         new_qty = book.get(price_cents, 0) + delta
