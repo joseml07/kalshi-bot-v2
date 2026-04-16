@@ -13,7 +13,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Body,
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 
@@ -314,8 +321,113 @@ def api_health() -> dict[str, Any]:
         "signal_counters_hour": runtime.get("health", {}).get(
             "signal_counters_hour", {}
         ),
+        "kalshi_ws": runtime.get("health", {}).get("kalshi_ws", {}),
     }
     return result
+
+
+@app.get("/api/diagnostics")
+def api_diagnostics(limit: int = 30) -> dict[str, Any]:
+    """Condensed incident snapshot for fast debugging.
+
+    Aggregates runtime health + recent DB activity + risk block reasons.
+    """
+    max_limit = max(10, min(limit, 200))
+
+    live_path = Path("live_state.json")
+    runtime: dict[str, Any] = {}
+    with contextlib.suppress(Exception):
+        if live_path.exists():
+            runtime = json.loads(live_path.read_text(encoding="utf-8"))
+
+    recent_trades = _query(
+        """SELECT id, timestamp, ticker, symbol, side, contracts, price, route, pnl, fees
+           FROM trades ORDER BY id DESC LIMIT ?""",
+        (max_limit,),
+    )
+    recent_signals = _query(
+        """SELECT id, timestamp, ticker, symbol, side, action, reason,
+                  edge, net_edge, seconds_remaining
+           FROM signals ORDER BY id DESC LIMIT ?""",
+        (max_limit,),
+    )
+    risk_blocks = _query(
+        """SELECT reason,
+                  COUNT(*) as count,
+                  MAX(timestamp) as last_seen
+           FROM signals
+           WHERE action = 'skip_risk'
+           GROUP BY reason
+           ORDER BY count DESC
+           LIMIT 12"""
+    )
+    action_counts = _query(
+        """SELECT action, COUNT(*) as count
+           FROM (
+             SELECT action FROM signals ORDER BY id DESC LIMIT ?
+           )
+           GROUP BY action
+           ORDER BY count DESC""",
+        (max_limit,),
+    )
+
+    last_trade = recent_trades[0] if recent_trades else None
+    last_signal = recent_signals[0] if recent_signals else None
+
+    incident_flags: list[str] = []
+    health = runtime.get("health", {}) if isinstance(runtime, dict) else {}
+    ws_diag = health.get("kalshi_ws", {}) if isinstance(health, dict) else {}
+    if health.get("coinbase_stale"):
+        incident_flags.append("coinbase_stale")
+    if health.get("kalshi_ws_stale"):
+        incident_flags.append("kalshi_ws_stale")
+    if float(ws_diag.get("negative_qty", 0) or 0) > 100:
+        incident_flags.append("ws_negative_qty_high")
+    if float(ws_diag.get("delta_missing_fields", 0) or 0) > 20:
+        incident_flags.append("ws_missing_fields_high")
+    if float(ws_diag.get("resync_full", 0) or 0) > 0:
+        incident_flags.append("ws_resync_full_seen")
+    if float(ws_diag.get("resync_ticker", 0) or 0) > 0:
+        incident_flags.append("ws_resync_ticker_seen")
+
+    endpoint_catalog = {
+        "health": ["/api/health", "/api/diagnostics", "/api/live", "/ws/live"],
+        "trades": ["/api/trades", "/api/summary", "/api/stats", "/api/routes"],
+        "signals": [
+            "/api/signals",
+            "/api/strategy_evals",
+            "/api/windows",
+            "/api/analyses",
+        ],
+        "control": [
+            "/api/settings",
+            "/api/reset",
+            "/api/kill",
+            "/api/resume",
+            "/api/kill_switch",
+        ],
+        "export": ["/api/export/state", "/api/export/changes", "/download/full.json"],
+    }
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "session_start": _session_start(),
+        "kill_switch_active": kill_switch_active(),
+        "summary": api_summary(),
+        "stats": api_stats(),
+        "health": api_health(),
+        "runtime_snapshot": runtime,
+        "incident_flags": incident_flags,
+        "latest": {
+            "trade": last_trade,
+            "signal": last_signal,
+        },
+        "signal_actions_recent": action_counts,
+        "risk_block_reasons": risk_blocks,
+        "recent_trades": recent_trades,
+        "recent_signals": recent_signals,
+        "endpoint_catalog": endpoint_catalog,
+    }
 
 
 @app.get("/api/export/state")

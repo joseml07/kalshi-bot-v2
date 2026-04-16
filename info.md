@@ -23,6 +23,7 @@ This file is a **quick-reference for humans + AI** to diagnose bot issues fast.
    - `negative_qty`, `delta_missing_fields`, `delta_parse_error`, `resync_ticker`, `resync_full`
 5. Confirm dashboard API is alive:
    - `GET /api/health`
+   - `GET /api/diagnostics`
    - `GET /api/summary`
 
 ---
@@ -95,6 +96,7 @@ Source: `src/kalshi_bot/dashboard.py`
 
 ### Health/export/streaming
 - `GET /api/health`
+- `GET /api/diagnostics`
 - `GET /api/export/state`
 - `GET /api/export/changes`
 - `GET /api/live` (SSE)
