@@ -18,7 +18,9 @@ def _make_feed() -> KalshiOrderbookFeed:
     settings.kalshi_private_key_path = MagicMock()
     settings.kalshi_api_key = "test-key"
     settings.ws_base_url = "wss://example.com/ws"
-    with patch("kalshi_bot.client.kalshi_ws.load_private_key", return_value=MagicMock()):
+    with patch(
+        "kalshi_bot.client.kalshi_ws.load_private_key", return_value=MagicMock()
+    ):
         return KalshiOrderbookFeed(settings)
 
 
@@ -113,3 +115,25 @@ async def test_sequence_gap_triggers_full_resync() -> None:
 
     assert feed.get_orderbook(TICKER) is None
     assert feed._resubscribe_event.is_set()
+
+
+def test_diagnostics_exposes_ws_health_counters() -> None:
+    feed = _make_feed()
+    feed._apply_snapshot({"market_ticker": TICKER, "yes": [["45", "100"]], "no": []})
+
+    for _ in range(5):
+        feed._apply_delta(
+            {
+                "market_ticker": TICKER,
+                "side": "yes",
+                "price_dollars": "0.45",
+                "delta_fp": "-1000.00",
+            }
+        )
+
+    diag = feed.diagnostics()
+    assert diag["messages_snapshot"] == 0
+    assert diag["messages_delta"] == 0
+    assert diag["negative_qty"] >= 1
+    assert diag["resync_ticker"] >= 1
+    assert diag["last_resync_ticker"] == TICKER

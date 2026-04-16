@@ -113,6 +113,22 @@ class KalshiOrderbookFeed:
         self._last_update_mono: float | None = None
         self._anomaly_counts: dict[str, int] = {}
         self._last_seq_by_sid: dict[int, int] = {}
+        self._stats: dict[str, int] = {
+            "messages_total": 0,
+            "messages_snapshot": 0,
+            "messages_delta": 0,
+            "delta_before_snapshot": 0,
+            "delta_missing_fields": 0,
+            "delta_parse_error": 0,
+            "delta_bad_side": 0,
+            "negative_qty": 0,
+            "sequence_gap": 0,
+            "resync_ticker": 0,
+            "resync_full": 0,
+        }
+        self._last_resync_reason: str | None = None
+        self._last_resync_ticker: str | None = None
+        self._last_resync_mono: float | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -128,6 +144,20 @@ class KalshiOrderbookFeed:
         if state is None:
             return None
         return _state_to_orderbook(ticker, state), state.updated_at
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return lightweight WS health diagnostics for dashboards/logging."""
+        last_resync_age_s: float | None = None
+        if self._last_resync_mono is not None:
+            last_resync_age_s = max(0.0, time.monotonic() - self._last_resync_mono)
+        return {
+            **self._stats,
+            "active_books": len(self._books),
+            "tracked_tickers": len(self._tickers),
+            "last_resync_reason": self._last_resync_reason,
+            "last_resync_ticker": self._last_resync_ticker,
+            "last_resync_age_s": last_resync_age_s,
+        }
 
     async def set_tickers(self, tickers: set[str]) -> None:
         """Update the set of subscribed tickers.
@@ -253,6 +283,7 @@ class KalshiOrderbookFeed:
     async def _handle_message(self, msg: dict[str, Any]) -> None:
         """Dispatch an incoming WebSocket message."""
         msg_type = msg.get("type")
+        self._stats["messages_total"] += 1
         sid = msg.get("sid")
         seq = msg.get("seq")
         if isinstance(sid, int) and isinstance(seq, int):
@@ -261,6 +292,7 @@ class KalshiOrderbookFeed:
                 if seq <= prev:
                     return
                 if seq > prev + 1 and msg_type != "orderbook_snapshot":
+                    self._stats["sequence_gap"] += 1
                     logger.warning(
                         "kalshi_ws_sequence_gap sid=%s prev=%s seq=%s",
                         sid,
@@ -274,8 +306,10 @@ class KalshiOrderbookFeed:
             self._last_seq_by_sid[sid] = seq
 
         if msg_type == "orderbook_snapshot":
+            self._stats["messages_snapshot"] += 1
             self._apply_snapshot(msg.get("msg", {}))
         elif msg_type == "orderbook_delta":
+            self._stats["messages_delta"] += 1
             self._apply_delta(msg.get("msg", {}))
         elif msg_type == "error":
             logger.error("kalshi_ws_error msg=%s", msg)
@@ -353,11 +387,13 @@ class KalshiOrderbookFeed:
         state = self._books.get(ticker)
         if state is None:
             # Delta arrived before snapshot — ignore safely; snapshot will follow.
+            self._stats["delta_before_snapshot"] += 1
             logger.debug("kalshi_ws_delta_before_snapshot ticker=%s", ticker)
             return
 
         side: str = data.get("side", "")
         if side not in ("yes", "no"):
+            self._stats["delta_bad_side"] += 1
             logger.warning("kalshi_ws_delta_bad_side ticker=%s side=%s", ticker, side)
             self._mark_anomaly(ticker, "bad_side")
             return
@@ -367,6 +403,7 @@ class KalshiOrderbookFeed:
         raw_delta = data.get("delta") or data.get("delta_fp")
 
         if raw_price is None or raw_delta is None:
+            self._stats["delta_missing_fields"] += 1
             logger.warning(
                 "kalshi_ws_delta_missing_fields ticker=%s keys=%s",
                 ticker,
@@ -378,6 +415,7 @@ class KalshiOrderbookFeed:
         price_cents = _parse_price_to_cents(raw_price)
         delta = _parse_quantity_to_int(raw_delta)
         if price_cents is None or delta is None:
+            self._stats["delta_parse_error"] += 1
             logger.error("kalshi_ws_delta_parse_error ticker=%s data=%s", ticker, data)
             self._mark_anomaly(ticker, "parse_error")
             return
@@ -388,6 +426,7 @@ class KalshiOrderbookFeed:
         if new_qty <= 0:
             book.pop(price_cents, None)
             if new_qty < 0:
+                self._stats["negative_qty"] += 1
                 logger.warning(
                     "kalshi_ws_negative_qty ticker=%s side=%s price=%d qty=%d",
                     ticker,
@@ -415,12 +454,20 @@ class KalshiOrderbookFeed:
 
     def _schedule_ticker_resync(self, ticker: str, reason: str) -> None:
         """Clear one ticker book and request fresh snapshot(s)."""
+        self._stats["resync_ticker"] += 1
+        self._last_resync_reason = reason
+        self._last_resync_ticker = ticker
+        self._last_resync_mono = time.monotonic()
         self._books.pop(ticker, None)
         self._resubscribe_event.set()
         logger.warning("kalshi_ws_resync_ticker ticker=%s reason=%s", ticker, reason)
 
     def _schedule_full_resync(self, reason: str) -> None:
         """Clear all books and request fresh snapshots for active tickers."""
+        self._stats["resync_full"] += 1
+        self._last_resync_reason = reason
+        self._last_resync_ticker = None
+        self._last_resync_mono = time.monotonic()
         self._books.clear()
         self._resubscribe_event.set()
         logger.warning("kalshi_ws_resync_full reason=%s", reason)

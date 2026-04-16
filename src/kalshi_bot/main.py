@@ -686,6 +686,7 @@ async def _slow_housekeeping_loop(
             util = client.api_utilization()
             coinbase_age = feed.last_tick_age_s if feed is not None else None
             kalshi_age = ws_feed.last_update_age_s if ws_feed is not None else None
+            ws_diag = ws_feed.diagnostics() if ws_feed is not None else None
             db_age = recorder.last_write_age_s if recorder is not None else None
             db_latency = (
                 recorder.last_write_latency_ms if recorder is not None else None
@@ -705,6 +706,8 @@ async def _slow_housekeeping_loop(
                 "api_read_utilization": util["read_utilization"],
                 "api_write_utilization": util["write_utilization"],
             }
+            if ws_diag is not None:
+                live_state["health"]["kalshi_ws"] = ws_diag
 
             if signal_counters is not None and signal_counter_window_start is not None:
                 top = sorted(
@@ -725,6 +728,16 @@ async def _slow_housekeeping_loop(
                 kalshi_age=kalshi_age,
                 sent_state=stale_alert_state,
             )
+
+            if ws_diag is not None:
+                ws_warn = (
+                    ws_diag.get("negative_qty", 0) > 100
+                    or ws_diag.get("delta_missing_fields", 0) > 20
+                    or ws_diag.get("resync_ticker", 0) > 0
+                    or ws_diag.get("resync_full", 0) > 0
+                )
+                if ws_warn:
+                    logger.warning("kalshi_ws_health_alert", **ws_diag)
 
             for symbol in cached.active_symbols:
                 market = cached.get_market(symbol)
