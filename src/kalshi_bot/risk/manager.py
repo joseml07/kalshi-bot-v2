@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from kalshi_bot.config import Settings
+from kalshi_bot.models.market import OrderBook
 from kalshi_bot.strategy.signals import Signal
 
 logger = logging.getLogger(__name__)
@@ -38,13 +39,15 @@ class RiskManager:
 
     # --- Public API ---
 
-    def check(self, signal: Signal) -> None:
+    def check(self, signal: Signal, orderbook: OrderBook | None = None) -> None:
         """Run all pre-trade checks. Raises RiskVetoError if blocked."""
         self._rotate_day()
         self._check_locked_side(signal)
         self._check_kill_switch()
         self._check_daily_loss()
         self._check_concurrent_positions(signal.ticker)
+        if orderbook is not None:
+            self._check_crossed_book(orderbook)
 
     def record_fill(
         self,
@@ -160,6 +163,22 @@ class RiskManager:
         locked_side = self._locked_sides.get(signal.ticker)
         if locked_side is not None:
             raise RiskVetoError(f"Already traded {signal.ticker} ({locked_side} side)")
+
+    def _check_crossed_book(self, orderbook: OrderBook) -> None:
+        """Reject trades when the cached book is crossed (ask <= bid).
+
+        A crossed book is impossible in a healthy market and indicates the
+        local WS orderbook state is corrupted. Trading on it produces bogus
+        edge estimates. Better to sit out until auto-resync recovers.
+        """
+        best_yes_bid = orderbook.best_yes_bid
+        best_yes_ask = orderbook.best_yes_ask
+        if best_yes_bid is None or best_yes_ask is None:
+            return
+        if best_yes_ask <= best_yes_bid:
+            raise RiskVetoError(
+                f"Crossed book: yes_ask={best_yes_ask} <= yes_bid={best_yes_bid}"
+            )
 
 
 def _today() -> date:

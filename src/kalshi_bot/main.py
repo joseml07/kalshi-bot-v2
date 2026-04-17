@@ -579,7 +579,7 @@ async def _fast_eval_loop(
                 continue
 
             try:
-                risk.check(signal)
+                risk.check(signal, orderbook)
             except RiskVetoError as exc:
                 executor.log_signal(signal, "skip_risk", str(exc))
                 _bump_counter(signal_counters, "skip_risk")
@@ -625,7 +625,10 @@ async def _slow_housekeeping_loop(
     signal_counter_window_start: list[datetime] | None = None,
 ) -> None:
     """Periodic housekeeping loop (REST I/O, settlements, exits, live state)."""
-    last_analysis_time: dict[str, datetime] = {}
+    # Dedupe only: key = (symbol, window_close_time.isoformat()). Prevents
+    # double-analysis if the same closed window gets popped twice; does NOT
+    # gate cadence — every newly-closed window gets analyzed.
+    analyzed_windows: set[tuple[str, str]] = set()
     stale_alert_state: dict[str, bool] = {}
 
     while not shutdown.is_set():
@@ -942,18 +945,27 @@ async def _slow_housekeeping_loop(
                         result="up" if prev.went_up else "down",
                     )
 
-                now_utc = datetime.now(timezone.utc)
-                last_ran = last_analysis_time.get(symbol)
-                if last_ran is None or (now_utc - last_ran).total_seconds() >= 3600:
-                    last_analysis_time[symbol] = now_utc
-                    await _run_window_analysis(
-                        symbol,
-                        closed_window,
-                        executor,
-                        tracker,
-                        alerter,
-                        openrouter,
-                    )
+                dedupe_key = (symbol, closed_window.close_time.isoformat())
+                if dedupe_key not in analyzed_windows:
+                    analyzed_windows.add(dedupe_key)
+                    try:
+                        await asyncio.wait_for(
+                            _run_window_analysis(
+                                symbol,
+                                closed_window,
+                                executor,
+                                tracker,
+                                alerter,
+                                openrouter,
+                            ),
+                            timeout=30.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "window_analysis_timeout symbol=%s window=%s",
+                            symbol,
+                            closed_window.close_time.isoformat(),
+                        )
 
         except Exception:
             logger.exception("housekeeping_cycle_error")

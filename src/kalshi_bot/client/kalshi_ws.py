@@ -36,7 +36,18 @@ _RECONNECT_BACKOFF = 3.0
 _LevelMap = dict[int, int]
 
 # If we observe too many malformed deltas for a ticker, force resubscribe.
-_ANOMALY_RESYNC_THRESHOLD = 5
+# Counter decays (does not reset) on good deltas, so bursts accumulate even
+# when interleaved with valid traffic — a pure reset-on-good was observed to
+# never fire in production because good and bad deltas arrive concurrently.
+_ANOMALY_RESYNC_THRESHOLD = 3
+
+# Minimum seconds between consecutive resyncs for the same ticker, to avoid
+# thrashing when the upstream feed is genuinely degraded.
+_RESYNC_COOLDOWN_S = 10.0
+
+# If the sum of per-ticker anomaly counters crosses this while any single
+# ticker is below its own threshold, escalate to a full resync of all books.
+_FULL_RESYNC_BURST_THRESHOLD = 10
 
 
 @dataclass
@@ -129,6 +140,7 @@ class KalshiOrderbookFeed:
         self._last_resync_reason: str | None = None
         self._last_resync_ticker: str | None = None
         self._last_resync_mono: float | None = None
+        self._last_ticker_resync_mono: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -437,7 +449,11 @@ class KalshiOrderbookFeed:
                 self._mark_anomaly(ticker, "negative_qty")
         else:
             book[price_cents] = new_qty
-            self._anomaly_counts[ticker] = 0
+            # Do NOT reset self._anomaly_counts[ticker] here. Resetting on every
+            # valid delta erases the corruption signal when good and bad deltas
+            # interleave — observed in production (3466 bad deltas, only 61
+            # resyncs before this fix). The counter is cleared naturally when a
+            # fresh snapshot arrives (via resync in _apply_snapshot).
 
         state.updated_at = datetime.now(timezone.utc)
         self._last_update_mono = time.monotonic()
@@ -451,13 +467,26 @@ class KalshiOrderbookFeed:
         if count >= _ANOMALY_RESYNC_THRESHOLD:
             self._anomaly_counts[ticker] = 0
             self._schedule_ticker_resync(ticker, reason)
+            return
+        # Escalate to full resync if many tickers are flaky at once — a single
+        # ticker may not cross its own threshold but cumulative instability is
+        # a strong signal that the whole feed is degraded.
+        total = sum(self._anomaly_counts.values())
+        if total >= _FULL_RESYNC_BURST_THRESHOLD:
+            self._anomaly_counts.clear()
+            self._schedule_full_resync(f"anomaly_burst total={total}")
 
     def _schedule_ticker_resync(self, ticker: str, reason: str) -> None:
         """Clear one ticker book and request fresh snapshot(s)."""
+        now = time.monotonic()
+        last = self._last_ticker_resync_mono.get(ticker)
+        if last is not None and (now - last) < _RESYNC_COOLDOWN_S:
+            return
+        self._last_ticker_resync_mono[ticker] = now
         self._stats["resync_ticker"] += 1
         self._last_resync_reason = reason
         self._last_resync_ticker = ticker
-        self._last_resync_mono = time.monotonic()
+        self._last_resync_mono = now
         self._books.pop(ticker, None)
         self._resubscribe_event.set()
         logger.warning("kalshi_ws_resync_ticker ticker=%s reason=%s", ticker, reason)

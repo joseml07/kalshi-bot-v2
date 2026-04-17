@@ -93,6 +93,71 @@ def test_anomaly_threshold_triggers_ticker_resync() -> None:
     assert feed._resubscribe_event.is_set()
 
 
+def test_interleaved_bad_and_good_deltas_still_trigger_resync() -> None:
+    """Regression: a good delta between bad ones must NOT erase the anomaly
+    counter. In production the reset-on-good logic let thousands of
+    negative_qty events accumulate without ever triggering a resync because
+    valid deltas kept arriving concurrently and resetting the counter.
+    """
+    feed = _make_feed()
+    feed._apply_snapshot(
+        {"market_ticker": TICKER, "yes": [["45", "10000"]], "no": []}
+    )
+    feed._resubscribe_event.clear()
+
+    # Alternate: bad, good, bad, good, ... for 10 bad and 10 good.
+    for _ in range(10):
+        feed._apply_delta(
+            {
+                "market_ticker": TICKER,
+                "side": "yes",
+                "price_dollars": "0.45",
+                "delta_fp": "-999999.00",  # drives new_qty negative
+            }
+        )
+        feed._apply_delta(
+            {
+                "market_ticker": TICKER,
+                "side": "yes",
+                "price_dollars": "0.46",
+                "delta_fp": "1.00",  # valid, positive delta on a fresh level
+            }
+        )
+
+    diag = feed.diagnostics()
+    assert diag["resync_ticker"] >= 1, (
+        "Interleaved good deltas must not keep resetting the anomaly counter"
+    )
+
+
+def test_full_resync_on_anomaly_burst_across_tickers() -> None:
+    """If the whole feed is flaky, cumulative per-ticker anomalies should
+    escalate to a full resync even if no single ticker crosses its threshold.
+    """
+    feed = _make_feed()
+    tickers = [f"KX{sym}15M-TEST" for sym in ("BTC", "ETH", "SOL", "XRP", "DOGE")]
+    for t in tickers:
+        feed._apply_snapshot({"market_ticker": t, "yes": [["45", "1000"]], "no": []})
+
+    # 2 bad deltas each on 5 tickers → sum of per-ticker counts = 10. No
+    # single ticker hits threshold (3). The final delta (sum=10) crosses the
+    # burst threshold and triggers a full resync of all books.
+    for t in tickers:
+        for _ in range(2):
+            feed._apply_delta(
+                {
+                    "market_ticker": t,
+                    "side": "yes",
+                    "price_dollars": "0.45",
+                    "delta_fp": "-999999.00",
+                }
+            )
+
+    diag = feed.diagnostics()
+    assert diag["resync_full"] >= 1
+    assert diag["resync_ticker"] == 0
+
+
 @pytest.mark.asyncio
 async def test_sequence_gap_triggers_full_resync() -> None:
     feed = _make_feed()
