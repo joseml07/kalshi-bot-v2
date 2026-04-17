@@ -76,6 +76,7 @@ from kalshi_bot.logging_config import setup_logging
 from kalshi_bot.models.price import PriceTick
 from kalshi_bot.models.market import Market
 from kalshi_bot.risk.manager import RiskManager, RiskVetoError
+from kalshi_bot.strategy.fees import maker_fee, taker_fee
 from kalshi_bot.strategy.momentum import evaluate_momentum
 from kalshi_bot.strategy.probability import estimate_k_from_vol, estimate_up_probability
 
@@ -99,6 +100,96 @@ HOUSEKEEPING_INTERVAL_S = 5.0
 def _bump_counter(counters: dict[str, int], key: str) -> None:
     """Increment named in-memory signal counter."""
     counters[key] = counters.get(key, 0) + 1
+
+
+def _sign(value: float) -> int:
+    if value > 0:
+        return 1
+    if value < 0:
+        return -1
+    return 0
+
+
+def _infer_no_signal_block(
+    *,
+    window: WindowState,
+    orderbook: Any,
+    settings: Settings,
+) -> str:
+    """Best-effort likely block reason when evaluate_momentum returns None."""
+    seconds_remaining = window.seconds_remaining
+    if not (
+        settings.momentum_min_time <= seconds_remaining <= settings.momentum_max_time
+    ):
+        return "outside_time_window"
+
+    momentum = window.momentum_60s
+    if momentum is None or momentum == 0.0:
+        return "momentum_none"
+
+    imbalance = orderbook.orderbook_imbalance
+    mom_sign = _sign(momentum)
+    imb_sign = _sign(imbalance)
+    if mom_sign == 0 or imb_sign == 0 or mom_sign != imb_sign:
+        return "momentum_obi_sign_mismatch"
+
+    up_prob = estimate_up_probability(
+        window.price_change_pct,
+        seconds_remaining,
+        k=settings.logistic_k,
+    )
+
+    if mom_sign > 0:
+        est_prob = up_prob
+        maker_price = orderbook.best_yes_bid
+        taker_price = orderbook.best_yes_ask
+    else:
+        est_prob = 1 - up_prob
+        maker_price = orderbook.best_no_bid
+        taker_price = orderbook.best_no_ask
+
+    maker_ok = False
+    if (
+        maker_price is not None
+        and settings.min_trade_price <= float(maker_price) <= settings.max_trade_price
+    ):
+        contracts = 1
+        maker_fee_total = maker_fee(contracts, float(maker_price))
+        maker_net_edge = (
+            est_prob - float(maker_price) - float(maker_fee_total / contracts)
+        )
+        maker_ok = maker_net_edge >= settings.edge_threshold
+
+    taker_ok = False
+    if (
+        taker_price is not None
+        and settings.min_trade_price <= float(taker_price) <= settings.max_trade_price
+    ):
+        contracts = 1
+        taker_fee_total = taker_fee(contracts, float(taker_price))
+        taker_net_edge = (
+            est_prob - float(taker_price) - float(taker_fee_total / contracts)
+        )
+        taker_ok = taker_net_edge >= settings.edge_threshold
+
+    if not maker_ok and not taker_ok:
+        maker_in_bounds = (
+            maker_price is not None
+            and settings.min_trade_price
+            <= float(maker_price)
+            <= settings.max_trade_price
+        )
+        taker_in_bounds = (
+            taker_price is not None
+            and settings.min_trade_price
+            <= float(taker_price)
+            <= settings.max_trade_price
+        )
+        if not maker_in_bounds and not taker_in_bounds:
+            return "price_out_of_bounds"
+        return "edge_below_threshold"
+
+    return "edge_below_threshold"
 
 
 class CachedState:
@@ -352,6 +443,7 @@ async def run_bot(settings: Settings) -> None:
     cached = CachedState()
     signal_counters: dict[str, int] = {}
     signal_counter_window_start: list[datetime] = [datetime.now(timezone.utc)]
+    last_eval_reason: dict[str, dict[str, Any]] = {}
     alerter = _make_alerter(settings)
 
     logger.info(
@@ -424,6 +516,7 @@ async def run_bot(settings: Settings) -> None:
                 ws_feed,
                 signal_counters,
                 signal_counter_window_start,
+                last_eval_reason,
             )
         )
         housekeeping_task = asyncio.create_task(
@@ -442,6 +535,7 @@ async def run_bot(settings: Settings) -> None:
                 ws_feed=ws_feed,
                 signal_counters=signal_counters,
                 signal_counter_window_start=signal_counter_window_start,
+                last_eval_reason=last_eval_reason,
             )
         )
         drain_task = asyncio.create_task(
@@ -509,10 +603,30 @@ async def _fast_eval_loop(
     ws_feed: KalshiOrderbookFeed,
     signal_counters: dict[str, int],
     signal_counter_window_start: list[datetime],
+    last_eval_reason: dict[str, dict[str, Any]],
 ) -> None:
     """Event-driven strategy evaluation loop (no REST reads on hot path)."""
     last_eval_mono: dict[str, float] = {}
     last_risk_block: dict[str, str] = {}
+
+    def _record_reason(
+        symbol: str,
+        ticker: str | None,
+        result: str,
+        *,
+        likely_block: str | None = None,
+        log: bool = False,
+        **fields: Any,
+    ) -> None:
+        prev = last_eval_reason.get(symbol, {}).get("result")
+        last_eval_reason[symbol] = {
+            "result": result,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "ticker": ticker,
+            "likely_block": likely_block,
+        }
+        if log and prev != result:
+            logger.info(result, symbol=symbol, ticker=ticker, **fields)
 
     while not shutdown.is_set():
         now_utc = datetime.now(timezone.utc)
@@ -542,22 +656,39 @@ async def _fast_eval_loop(
             window = tracker.get_window(symbol)
             if window is None:
                 _bump_counter(signal_counters, "skip_no_window")
+                _record_reason(symbol, None, "skip_no_window")
                 continue
 
             market = cached.get_market(symbol)
             if market is None:
                 _bump_counter(signal_counters, "skip_no_market")
+                _record_reason(symbol, None, "skip_no_market")
                 continue
             ticker = market.ticker
 
             ob_cached = ws_feed.get_orderbook(ticker)
             if ob_cached is None:
                 _bump_counter(signal_counters, "skip_no_orderbook")
+                _record_reason(
+                    symbol,
+                    ticker,
+                    "skip_no_orderbook",
+                    likely_block="no_orderbook",
+                    log=True,
+                )
                 continue
             orderbook, ob_ts = ob_cached
             age = (datetime.now(timezone.utc) - ob_ts).total_seconds()
             if age > ORDERBOOK_STALENESS_S:
                 _bump_counter(signal_counters, "skip_stale_orderbook")
+                _record_reason(
+                    symbol,
+                    ticker,
+                    "skip_stale_orderbook",
+                    likely_block="stale_orderbook",
+                    log=True,
+                    age_s=age,
+                )
                 continue
 
             signal = evaluate_momentum(
@@ -576,6 +707,16 @@ async def _fast_eval_loop(
 
             if signal is None:
                 _bump_counter(signal_counters, "no_signal")
+                _record_reason(
+                    symbol,
+                    ticker,
+                    "no_signal",
+                    likely_block=_infer_no_signal_block(
+                        window=window,
+                        orderbook=orderbook,
+                        settings=settings,
+                    ),
+                )
                 continue
 
             try:
@@ -587,11 +728,13 @@ async def _fast_eval_loop(
                 if last_risk_block.get(ticker) != reason_str:
                     logger.info("risk_blocked", ticker=ticker, reason=reason_str)
                     last_risk_block[ticker] = reason_str
+                _record_reason(symbol, ticker, "skip_risk")
                 continue
 
             result = await executor.submit(signal, cached.balance)
             if result is not None:
                 _bump_counter(signal_counters, "trade")
+                _record_reason(symbol, ticker, "trade")
                 last_risk_block.pop(ticker, None)
                 executor.log_signal(signal, "trade", f"order_id={result.order_id}")
                 if alerter is not None:
@@ -600,9 +743,11 @@ async def _fast_eval_loop(
                     )
             elif executor._dry_run:
                 _bump_counter(signal_counters, "paper_trade")
+                _record_reason(symbol, ticker, "paper_trade")
                 executor.log_signal(signal, "paper_trade", "")
             else:
                 _bump_counter(signal_counters, "skip_sizing")
+                _record_reason(symbol, ticker, "skip_sizing")
                 executor.log_signal(
                     signal, "skip_sizing", "sizing returned 0 contracts"
                 )
@@ -623,6 +768,7 @@ async def _slow_housekeeping_loop(
     ws_feed: KalshiOrderbookFeed | None = None,
     signal_counters: dict[str, int] | None = None,
     signal_counter_window_start: list[datetime] | None = None,
+    last_eval_reason: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Periodic housekeeping loop (REST I/O, settlements, exits, live state)."""
     # Dedupe only: key = (symbol, window_close_time.isoformat()). Prevents
@@ -735,9 +881,7 @@ async def _slow_housekeeping_loop(
                     else 0
                 )
                 signals_h = (
-                    sum(signal_counters.values())
-                    if signal_counters is not None
-                    else 0
+                    sum(signal_counters.values()) if signal_counters is not None else 0
                 )
                 logger.info(
                     "HEALTH",
@@ -747,23 +891,15 @@ async def _slow_housekeeping_loop(
                     open_positions=risk.open_position_count,
                     trades_h=trades_h,
                     signals_h=signals_h,
-                    resyncs_ticker=(
-                        ws_diag.get("resync_ticker", 0) if ws_diag else 0
-                    ),
-                    resyncs_full=(
-                        ws_diag.get("resync_full", 0) if ws_diag else 0
-                    ),
-                    negative_qty=(
-                        ws_diag.get("negative_qty", 0) if ws_diag else 0
-                    ),
+                    resyncs_ticker=(ws_diag.get("resync_ticker", 0) if ws_diag else 0),
+                    resyncs_full=(ws_diag.get("resync_full", 0) if ws_diag else 0),
+                    negative_qty=(ws_diag.get("negative_qty", 0) if ws_diag else 0),
                     coinbase_age_s=coinbase_age,
                     kalshi_ws_age_s=kalshi_age,
                     coinbase_stale=bool(
                         coinbase_age is not None and coinbase_age > 30.0
                     ),
-                    kalshi_ws_stale=bool(
-                        kalshi_age is not None and kalshi_age > 30.0
-                    ),
+                    kalshi_ws_stale=bool(kalshi_age is not None and kalshi_age > 30.0),
                 )
 
             await _emit_feed_health_alerts(
@@ -794,6 +930,7 @@ async def _slow_housekeeping_loop(
                     continue
 
                 orderbook = None
+                orderbook_age_s: float | None = None
                 if ws_feed is not None:
                     ob_cached = ws_feed.get_orderbook(ticker)
                     if ob_cached is not None:
@@ -801,6 +938,7 @@ async def _slow_housekeeping_loop(
                         age = (datetime.now(timezone.utc) - ob_ts).total_seconds()
                         if age <= ORDERBOOK_STALENESS_S:
                             orderbook = ob_snapshot
+                            orderbook_age_s = age
 
                 if orderbook is None:
                     with contextlib.suppress(Exception):
@@ -823,14 +961,31 @@ async def _slow_housekeeping_loop(
                     "current_price": window.current_price,
                     "price_change_pct": window.price_change_pct,
                     "seconds_remaining": window.seconds_remaining,
+                    "momentum_60s": window.momentum_60s,
                     "kalshi_yes_ask": float(kalshi_yes_price),
                     "kalshi_yes_bid": float(best_bid) if best_bid is not None else None,
+                    "kalshi_no_bid": float(best_no_bid)
+                    if best_no_bid is not None
+                    else None,
+                    "orderbook_imbalance": orderbook.orderbook_imbalance,
+                    "orderbook_age_s": orderbook_age_s,
                     "position_contracts": 0,
                     "position_notional": 0.0,
                     "entry_price": None,
                     "unrealized_pnl": 0.0,
                     "fee_per_contract": None,
                 }
+
+                if last_eval_reason is not None:
+                    reason = last_eval_reason.get(symbol)
+                    if reason is not None:
+                        live_state["symbols"][symbol]["last_eval"] = {
+                            "result": reason.get("result"),
+                            "at": reason.get("at"),
+                        }
+                        live_state["symbols"][symbol]["likely_block"] = reason.get(
+                            "likely_block"
+                        )
 
                 active_orders = [
                     o for o in executor.filled_orders if o.signal.ticker == ticker

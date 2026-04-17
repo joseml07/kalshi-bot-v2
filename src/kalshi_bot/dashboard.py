@@ -76,6 +76,17 @@ def _session_start() -> str | None:
     return str(rows[0]["started_at"]) if rows else None
 
 
+def _read_live_state() -> dict[str, Any]:
+    live_path = Path("live_state.json")
+    if not live_path.exists():
+        return {}
+    with contextlib.suppress(Exception):
+        data = json.loads(live_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    return {}
+
+
 @app.get("/api/trades")
 def api_trades(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
     return _query(
@@ -292,11 +303,7 @@ def api_health() -> dict[str, Any]:
             result.setdefault(table, {})["count"] = 0
 
     # Added for phase-14 observability: pull runtime telemetry from live_state.json
-    live_path = Path("live_state.json")
-    runtime: dict[str, Any] = {}
-    with contextlib.suppress(Exception):
-        if live_path.exists():
-            runtime = json.loads(live_path.read_text(encoding="utf-8"))
+    runtime = _read_live_state()
 
     result["runtime"] = {
         "coinbase_last_tick_age_s": runtime.get("health", {}).get(
@@ -334,11 +341,7 @@ def api_diagnostics(limit: int = 30) -> dict[str, Any]:
     """
     max_limit = max(10, min(limit, 200))
 
-    live_path = Path("live_state.json")
-    runtime: dict[str, Any] = {}
-    with contextlib.suppress(Exception):
-        if live_path.exists():
-            runtime = json.loads(live_path.read_text(encoding="utf-8"))
+    runtime = _read_live_state()
 
     recent_trades = _query(
         """SELECT id, timestamp, ticker, symbol, side, contracts, price, route, pnl, fees
@@ -398,6 +401,7 @@ def api_diagnostics(limit: int = 30) -> dict[str, Any]:
             "/api/strategy_evals",
             "/api/windows",
             "/api/analyses",
+            "/api/why_not_trading",
         ],
         "control": [
             "/api/settings",
@@ -703,6 +707,73 @@ async def ws_live(websocket: WebSocket) -> None:
         return
 
 
+@app.get("/api/why_not_trading")
+def api_why_not_trading() -> dict[str, Any]:
+    """Per-symbol synthesized strategy state and likely trade blocker."""
+    state = _read_live_state()
+    symbols_state = state.get("symbols", {}) if isinstance(state, dict) else {}
+    if not isinstance(symbols_state, dict):
+        symbols_state = {}
+
+    configured: set[str] = set()
+    with contextlib.suppress(Exception):
+        configured = {
+            s.strip()
+            for s in _settings().symbols.split(",")
+            if isinstance(s, str) and s.strip()
+        }
+    active = {str(s).strip() for s in symbols_state.keys() if str(s).strip()}
+    all_symbols = sorted(configured | active)
+
+    rows: list[dict[str, Any]] = []
+    for symbol in all_symbols:
+        entry = symbols_state.get(symbol, {})
+        ticker = entry.get("ticker") if isinstance(entry, dict) else None
+        window = {
+            "open": entry.get("open_price") if isinstance(entry, dict) else None,
+            "current": entry.get("current_price") if isinstance(entry, dict) else None,
+            "price_change_pct": entry.get("price_change_pct")
+            if isinstance(entry, dict)
+            else None,
+            "seconds_remaining": entry.get("seconds_remaining")
+            if isinstance(entry, dict)
+            else None,
+            "momentum_60s": entry.get("momentum_60s")
+            if isinstance(entry, dict)
+            else None,
+        }
+        orderbook = {
+            "yes_bid": entry.get("kalshi_yes_bid") if isinstance(entry, dict) else None,
+            "yes_ask": entry.get("kalshi_yes_ask") if isinstance(entry, dict) else None,
+            "imbalance": entry.get("orderbook_imbalance")
+            if isinstance(entry, dict)
+            else None,
+            "age_s": entry.get("orderbook_age_s") if isinstance(entry, dict) else None,
+        }
+        last_eval = entry.get("last_eval") if isinstance(entry, dict) else None
+        likely_block = entry.get("likely_block") if isinstance(entry, dict) else None
+        if not isinstance(last_eval, dict):
+            last_eval = {"result": None, "at": None}
+        rows.append(
+            {
+                "symbol": symbol,
+                "ticker": ticker,
+                "window": window,
+                "orderbook": orderbook,
+                "last_eval": {
+                    "result": last_eval.get("result"),
+                    "at": last_eval.get("at"),
+                },
+                "likely_block": likely_block,
+            }
+        )
+
+    return {
+        "updated_at": state.get("updated_at") if isinstance(state, dict) else None,
+        "rows": rows,
+    }
+
+
 @app.get("/api/trade/{trade_id}")
 def api_trade_detail(trade_id: int) -> dict[str, Any]:
     rows = _query("SELECT * FROM trades WHERE id = ? LIMIT 1", (trade_id,))
@@ -770,19 +841,16 @@ def _require_admin(request: Request) -> None:
 @app.get("/api/balance")
 def api_balance() -> dict[str, Any]:
     """Kalshi account balance + trading mode, read from live_state.json."""
-    live_path = Path("live_state.json")
-    if not live_path.exists():
+    data = _read_live_state()
+    if not data:
         return {"balance": None, "balance_age_s": None, "trading_mode": None}
-    with contextlib.suppress(Exception):
-        data = json.loads(live_path.read_text(encoding="utf-8"))
-        return {
-            "balance": data.get("balance"),
-            "balance_age_s": data.get("balance_age_s"),
-            "trading_mode": data.get("trading_mode"),
-            "kelly_fraction": data.get("kelly_fraction"),
-            "updated_at": data.get("updated_at"),
-        }
-    return {"balance": None, "balance_age_s": None, "trading_mode": None}
+    return {
+        "balance": data.get("balance"),
+        "balance_age_s": data.get("balance_age_s"),
+        "trading_mode": data.get("trading_mode"),
+        "kelly_fraction": data.get("kelly_fraction"),
+        "updated_at": data.get("updated_at"),
+    }
 
 
 @app.get("/api/settings")

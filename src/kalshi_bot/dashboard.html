@@ -115,6 +115,23 @@ header {
 .section .body { padding:10px; }
 
 .live-grid { display:grid; grid-template-columns:repeat(3,minmax(220px,1fr)); gap:10px; }
+.strategy-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 10px;
+}
+.strategy-card {
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  padding: 10px;
+  background: #101726;
+}
+.strategy-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.strategy-sym { color:var(--muted); font-size:.74rem; text-transform:uppercase; letter-spacing:.08em; }
+.strategy-rem { font-size:.78rem; color:var(--muted); }
+.strategy-row { display:flex; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:.78rem; }
+.state-ready { color: var(--green); }
+.state-blocked { color: var(--amber); }
 .symbol { border:1px solid var(--line-soft); border-radius:12px; padding:11px; background:#111924; }
 .symbol .name { color:var(--muted); font-size:.74rem; text-transform:uppercase; letter-spacing:.08em; }
 .symbol .price { font-size:1.45rem; margin-top:4px; }
@@ -151,10 +168,12 @@ pre.code {
 @media (max-width: 1150px) {
   .card { grid-column: span 6; }
   .two-col, .panel-grid { grid-template-columns:1fr; }
+  .strategy-strip,
   .live-grid { grid-template-columns:repeat(2,minmax(220px,1fr)); }
 }
 @media (max-width: 760px) {
   .card { grid-column: span 12; }
+  .strategy-strip,
   .live-grid { grid-template-columns:1fr; }
 }
 </style>
@@ -194,6 +213,10 @@ pre.code {
 
   <section id="tab-live" class="tab active">
     <div class="grid" id="kpiCards"></div>
+    <section class="section">
+      <h2>Strategy state</h2>
+      <div class="body"><div id="strategyStrip" class="strategy-strip"><div class="footer-note">Awaiting strategy state…</div></div></div>
+    </section>
     <section class="section">
       <h2>Active windows</h2>
       <div class="body"><div id="liveGrid" class="live-grid"><div class="footer-note">Awaiting live state…</div></div></div>
@@ -319,6 +342,7 @@ let viewAll = false;
 let charts = {};
 let lastApiLatencyMs = null;
 let lastStreamLagMs = null;
+let strategyRequestInFlight = false;
 
 function fmtMoney(v){ const n=Number(v||0); return `${n>=0?'+':''}$${n.toFixed(2)}`; }
 function clsByVal(v){ const n=Number(v||0); return n>0?'pos':n<0?'neg':''; }
@@ -498,6 +522,62 @@ function renderLive(data){
     const progress=Math.max(0,Math.min(100,(1-rem/900)*100));
     return `<div class="symbol"><div class="name">${sym}</div><div class="price">$${Number(s.current_price||0).toLocaleString(undefined,{maximumFractionDigits:2})}</div><div class="meta"><span>Δ <span class="${pct>=0?'pos':'neg'}">${pct>=0?'+':''}${pct.toFixed(3)}%</span></span><span>YES ask: ${s.kalshi_yes_ask!=null?'$'+Number(s.kalshi_yes_ask).toFixed(2):'—'}</span><span>P(up): ${s.model_prob!=null?(Number(s.model_prob)*100).toFixed(1)+'%':'—'}</span><span>Pos: ${Number(s.position_contracts||0)} @ ${s.entry_price!=null?'$'+Number(s.entry_price).toFixed(2):'—'}</span><span>U-PnL: <span class="${clsByVal(s.unrealized_pnl)}">${fmtMoney(s.unrealized_pnl||0)}</span></span></div><div class="progress"><span style="width:${progress}%"></span></div></div>`;
   }).join('');
+
+  refreshStrategyStrip().catch(()=>{});
+}
+
+function signArrow(v){
+  const n = Number(v || 0);
+  if(!Number.isFinite(n) || n === 0) return '→';
+  return n > 0 ? '↑' : '↓';
+}
+
+function shortBlock(reason){
+  if(!reason) return 'ready';
+  const map = {
+    momentum_obi_sign_mismatch: 'sign mismatch',
+    outside_time_window: 'time window',
+    no_orderbook: 'no orderbook',
+    stale_orderbook: 'stale orderbook',
+    momentum_none: 'no momentum',
+    edge_below_threshold: 'edge low',
+    price_out_of_bounds: 'price bounds',
+  };
+  return map[reason] || String(reason);
+}
+
+function renderStrategyStrip(payload){
+  const box = $('strategyStrip');
+  if(!box) return;
+  const rows = (payload && Array.isArray(payload.rows)) ? payload.rows : [];
+  if(!rows.length){
+    box.innerHTML = '<div class="strategy-card"><div class="strategy-sym">No symbols tracked</div></div>';
+    return;
+  }
+  box.innerHTML = rows.map(r=>{
+    const w = r.window || {};
+    const ob = r.orderbook || {};
+    const rem = Number(w.seconds_remaining || 0);
+    const mom = Number(w.momentum_60s || 0);
+    const imb = Number(ob.imbalance || 0);
+    const block = r.likely_block;
+    const state = block ? `<span class="state-blocked">${shortBlock(block)}</span>` : '<span class="state-ready">✓ ready</span>';
+    return `<div class="strategy-card">
+      <div class="strategy-top"><span class="strategy-sym">${r.symbol || '—'}</span><span class="strategy-rem">${rem}s</span></div>
+      <div class="strategy-row"><span>Mom ${signArrow(mom)}</span><span>OBI ${signArrow(imb)}</span><span>${state}</span></div>
+    </div>`;
+  }).join('');
+}
+
+async function refreshStrategyStrip(){
+  if(strategyRequestInFlight) return;
+  strategyRequestInFlight = true;
+  try{
+    const payload = await fetch('/api/why_not_trading').then(r=>r.json());
+    renderStrategyStrip(payload);
+  } finally {
+    strategyRequestInFlight = false;
+  }
 }
 
 function renderRoutes(rows){

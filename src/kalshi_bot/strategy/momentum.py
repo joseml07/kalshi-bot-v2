@@ -55,7 +55,7 @@ def evaluate_momentum(
     mom_sign = _sign(momentum)
     imb_sign = _sign(imbalance)
     if mom_sign == 0 or imb_sign == 0 or mom_sign != imb_sign:
-        logger.debug(
+        logger.info(
             "momentum_obi_mismatch ticker=%s momentum=%.5f imbalance=%.0f "
             "mom_sign=%d imb_sign=%d secs=%d",
             ticker,
