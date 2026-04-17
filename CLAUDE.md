@@ -105,6 +105,19 @@ tests/                   — pytest suite, run with: PYTHONPATH=src pytest tests
 5. **Exit sell price** — V1 used `best_bid - $0.01` (guaranteed slippage). V2 should sell at `best_bid`.
 6. **Config deploy failures** — V1's $0.27 floor was set in code but never deployed. Use `.env` as single source of truth with sane defaults in code.
 
+## Investigating live VPS state
+
+The bot runs at `http://137.184.144.30` (port 80, no auth on read endpoints). Use `curl` from Bash — do NOT ask the user for tarballs.
+
+Start with `GET /api/diagnostics` for the one-shot incident snapshot. For raw forensic log access:
+
+- `GET /api/logs/tail?n=100&event=<substrings>&level=warning&since=<iso>` — reverse-scans `logs/bot.log` in 64 KB chunks, bounded by a 2 MB scan cap. `n` is capped at 500. `event` accepts a comma-separated list (OR match on substring). Returns `{lines, scanned_bytes, truncated, returned}`.
+- `GET /api/logs/stats` — event-name histogram over the recent log window. One-shot "what's happening right now" without transferring raw lines.
+
+Look at the `HEALTH` heartbeat (fired every 60 s) for a scannable session timeline: `curl '.../api/logs/tail?event=HEALTH&n=30'`.
+
+Write endpoints (trades, kill switch, settings) stay admin-key gated and intentionally out of AI hands — the user is the only one who should touch those.
+
 ## Git Workflow
 
 This is a standalone git repo. The implementation plan is in PLAN.md.

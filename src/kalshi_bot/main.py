@@ -630,6 +630,7 @@ async def _slow_housekeeping_loop(
     # gate cadence — every newly-closed window gets analyzed.
     analyzed_windows: set[tuple[str, str]] = set()
     stale_alert_state: dict[str, bool] = {}
+    last_heartbeat_mono: float = 0.0
 
     while not shutdown.is_set():
         try:
@@ -724,6 +725,46 @@ async def _slow_housekeeping_loop(
                 live_state["health"]["signal_counters_hour"] = {
                     key: value for key, value in top
                 }
+
+            now_mono = time.monotonic()
+            if now_mono - last_heartbeat_mono >= 60.0:
+                last_heartbeat_mono = now_mono
+                trades_h = (
+                    signal_counters.get("trade", 0)
+                    if signal_counters is not None
+                    else 0
+                )
+                signals_h = (
+                    sum(signal_counters.values())
+                    if signal_counters is not None
+                    else 0
+                )
+                logger.info(
+                    "HEALTH",
+                    mode=settings.trading_mode,
+                    balance=float(cached.balance),
+                    daily_pnl=float(risk.daily_pnl),
+                    open_positions=risk.open_position_count,
+                    trades_h=trades_h,
+                    signals_h=signals_h,
+                    resyncs_ticker=(
+                        ws_diag.get("resync_ticker", 0) if ws_diag else 0
+                    ),
+                    resyncs_full=(
+                        ws_diag.get("resync_full", 0) if ws_diag else 0
+                    ),
+                    negative_qty=(
+                        ws_diag.get("negative_qty", 0) if ws_diag else 0
+                    ),
+                    coinbase_age_s=coinbase_age,
+                    kalshi_ws_age_s=kalshi_age,
+                    coinbase_stale=bool(
+                        coinbase_age is not None and coinbase_age > 30.0
+                    ),
+                    kalshi_ws_stale=bool(
+                        kalshi_age is not None and kalshi_age > 30.0
+                    ),
+                )
 
             await _emit_feed_health_alerts(
                 alerter=alerter,

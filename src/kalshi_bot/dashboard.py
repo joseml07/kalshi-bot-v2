@@ -849,6 +849,168 @@ def api_kill_switch_state() -> dict[str, Any]:
     return {"kill_switch_active": kill_switch_active()}
 
 
+_BOT_LOG_PATH = Path("logs/bot.log")
+_LOG_SCAN_CAP_BYTES = 2 * 1024 * 1024  # never scan more than 2 MB per request
+_LOG_CHUNK_BYTES = 64 * 1024
+_LOG_LEVEL_ORDER = {"debug": 10, "info": 20, "warning": 30, "error": 40, "critical": 50}
+
+
+def _iter_log_lines_reverse(max_bytes: int) -> tuple[list[str], int]:
+    """Return up to max_bytes of the newest bot.log lines, oldest-first.
+
+    Reads the file backwards in 64 KB chunks until either the requested byte
+    budget is exhausted or the file begins. Keeps partial-line fragments
+    across chunk boundaries so we never emit a truncated JSON line.
+    """
+    if not _BOT_LOG_PATH.exists():
+        return [], 0
+    cap = min(max_bytes, _LOG_SCAN_CAP_BYTES)
+    with _BOT_LOG_PATH.open("rb") as f:
+        f.seek(0, io.SEEK_END)
+        file_end = f.tell()
+        pos = file_end
+        buf = b""
+        collected: list[str] = []
+        while pos > 0 and (file_end - pos) < cap:
+            read_size = min(_LOG_CHUNK_BYTES, pos)
+            pos -= read_size
+            f.seek(pos)
+            chunk = f.read(read_size)
+            buf = chunk + buf
+            # We may be mid-line at the left boundary if pos > 0; hold the
+            # first fragment until the next iteration completes it.
+            parts = buf.split(b"\n")
+            if pos > 0:
+                buf = parts[0]
+                complete = parts[1:]
+            else:
+                buf = b""
+                complete = parts
+            for raw in reversed(complete):
+                if not raw.strip():
+                    continue
+                try:
+                    collected.append(raw.decode("utf-8", errors="replace"))
+                except Exception:
+                    continue
+        scanned = file_end - pos
+    collected.reverse()
+    return collected, scanned
+
+
+def _parse_log_line(raw: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _match_log_entry(
+    entry: dict[str, Any],
+    event_filters: list[str],
+    min_level: int,
+    since_iso: str | None,
+) -> bool:
+    event = str(entry.get("event", ""))
+    if event_filters and not any(f in event for f in event_filters):
+        return False
+    if min_level > 0:
+        level = str(entry.get("level", "info")).lower()
+        if _LOG_LEVEL_ORDER.get(level, 20) < min_level:
+            return False
+    if since_iso is not None:
+        ts = entry.get("timestamp")
+        if not isinstance(ts, str) or ts < since_iso:
+            return False
+    return True
+
+
+@app.get("/api/logs/tail")
+def api_logs_tail(
+    n: int = 100,
+    event: str | None = None,
+    level: str | None = None,
+    since: str | None = None,
+    max_bytes: int = _LOG_SCAN_CAP_BYTES,
+) -> dict[str, Any]:
+    """Return the most recent matching JSON log lines.
+
+    Reverse-scans `logs/bot.log` in 64 KB chunks, bounded by `max_bytes`
+    (hard-capped at 2 MB). Intended for AI-driven incident diagnosis — keep
+    requests narrow with `event=` / `since=` filters rather than pulling raw.
+    """
+    n = max(1, min(n, 500))
+    max_bytes = max(_LOG_CHUNK_BYTES, min(max_bytes, _LOG_SCAN_CAP_BYTES))
+    event_filters: list[str] = []
+    if event:
+        event_filters = [e.strip() for e in event.split(",") if e.strip()]
+    min_level = _LOG_LEVEL_ORDER.get(level.lower(), 0) if level else 0
+
+    lines, scanned = _iter_log_lines_reverse(max_bytes)
+    matching: list[dict[str, Any]] = []
+    for raw in reversed(lines):  # newest → oldest
+        entry = _parse_log_line(raw)
+        if entry is None:
+            continue
+        if not _match_log_entry(entry, event_filters, min_level, since):
+            continue
+        matching.append(entry)
+        if len(matching) >= n:
+            break
+    matching.reverse()  # oldest → newest to read top-down
+    return {
+        "lines": matching,
+        "scanned_bytes": scanned,
+        "truncated": scanned >= max_bytes,
+        "returned": len(matching),
+    }
+
+
+@app.get("/api/logs/stats")
+def api_logs_stats(max_bytes: int = _LOG_SCAN_CAP_BYTES) -> dict[str, Any]:
+    """Histogram of event names in the recent log window.
+
+    Gives a fast "what's happening right now" view without transferring raw
+    lines — emits counts keyed by event prefix (up to the first space, so
+    `kalshi_ws_negative_qty ticker=X side=...` collapses to
+    `kalshi_ws_negative_qty`).
+    """
+    max_bytes = max(_LOG_CHUNK_BYTES, min(max_bytes, _LOG_SCAN_CAP_BYTES))
+    lines, scanned = _iter_log_lines_reverse(max_bytes)
+    counts: dict[str, int] = {}
+    first_ts: str | None = None
+    last_ts: str | None = None
+    for raw in lines:
+        entry = _parse_log_line(raw)
+        if entry is None:
+            continue
+        event = str(entry.get("event", "")).split(" ", 1)[0]
+        if not event:
+            continue
+        counts[event] = counts.get(event, 0) + 1
+        ts = entry.get("timestamp")
+        if isinstance(ts, str):
+            if first_ts is None or ts < first_ts:
+                first_ts = ts
+            if last_ts is None or ts > last_ts:
+                last_ts = ts
+    span_s: float | None = None
+    if first_ts and last_ts:
+        with contextlib.suppress(Exception):
+            span_s = (
+                datetime.fromisoformat(last_ts) - datetime.fromisoformat(first_ts)
+            ).total_seconds()
+    sorted_counts = dict(sorted(counts.items(), key=lambda kv: kv[1], reverse=True))
+    return {
+        "scanned_bytes": scanned,
+        "window_start": first_ts,
+        "window_end": last_ts,
+        "window_spans_seconds": span_s,
+        "events": sorted_counts,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard() -> str:
     html_path = Path(__file__).parent / "dashboard.html"

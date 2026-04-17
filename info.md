@@ -97,6 +97,8 @@ Source: `src/kalshi_bot/dashboard.py`
 ### Health/export/streaming
 - `GET /api/health`
 - `GET /api/diagnostics`
+- `GET /api/logs/tail` — reverse-scan `logs/bot.log`; filters: `n` (≤500), `event` (comma-separated substrings, OR), `level` (`info|warning|error`), `since` (ISO), `max_bytes` (≤2 MB)
+- `GET /api/logs/stats` — event histogram over last ~2 MB of `logs/bot.log`
 - `GET /api/export/state`
 - `GET /api/export/changes`
 - `GET /api/live` (SSE)
@@ -174,7 +176,9 @@ Top-level keys:
 - `exit_signal` → exit criteria hit.
 - `housekeeping_cycle_error` → critical housekeeping exception.
 - `window_analysis_failed` → post-window analysis failed.
+- `window_analysis_timeout` → analysis exceeded 30 s wall budget.
 - `kalshi_ws_health_alert` → WS diagnostics crossed warning thresholds.
+- `HEALTH` → 60-second session heartbeat (mode, balance, daily_pnl, open_positions, trades_h, signals_h, resyncs_ticker/full, negative_qty, coinbase_age_s, kalshi_ws_age_s). `grep HEALTH bot.log` gives a scannable session timeline.
 
 ### WS feed
 - `kalshi_ws_connected`

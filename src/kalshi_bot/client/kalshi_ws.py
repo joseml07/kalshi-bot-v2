@@ -141,6 +141,11 @@ class KalshiOrderbookFeed:
         self._last_resync_ticker: str | None = None
         self._last_resync_mono: float | None = None
         self._last_ticker_resync_mono: dict[str, float] = {}
+        # Count of bad deltas observed per ticker since its last resync. Resets
+        # on ticker resync (for that ticker) or full resync (all tickers).
+        # Growing monotonically between resyncs means the feed is degrading
+        # faster than we recover.
+        self._bad_deltas_since_last_resync: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -464,9 +469,12 @@ class KalshiOrderbookFeed:
         """Track WS anomalies and force resubscribe if persistent."""
         count = self._anomaly_counts.get(ticker, 0) + 1
         self._anomaly_counts[ticker] = count
+        self._bad_deltas_since_last_resync[ticker] = (
+            self._bad_deltas_since_last_resync.get(ticker, 0) + 1
+        )
         if count >= _ANOMALY_RESYNC_THRESHOLD:
             self._anomaly_counts[ticker] = 0
-            self._schedule_ticker_resync(ticker, reason)
+            self._schedule_ticker_resync(ticker, reason, trigger_count=count)
             return
         # Escalate to full resync if many tickers are flaky at once — a single
         # ticker may not cross its own threshold but cumulative instability is
@@ -476,30 +484,60 @@ class KalshiOrderbookFeed:
             self._anomaly_counts.clear()
             self._schedule_full_resync(f"anomaly_burst total={total}")
 
-    def _schedule_ticker_resync(self, ticker: str, reason: str) -> None:
+    def _schedule_ticker_resync(
+        self, ticker: str, reason: str, trigger_count: int = 0
+    ) -> None:
         """Clear one ticker book and request fresh snapshot(s)."""
         now = time.monotonic()
         last = self._last_ticker_resync_mono.get(ticker)
         if last is not None and (now - last) < _RESYNC_COOLDOWN_S:
             return
+        since_last_s: float | None = None
+        if last is not None:
+            since_last_s = now - last
+        bad_deltas = self._bad_deltas_since_last_resync.get(ticker, 0)
         self._last_ticker_resync_mono[ticker] = now
+        self._bad_deltas_since_last_resync[ticker] = 0
         self._stats["resync_ticker"] += 1
         self._last_resync_reason = reason
         self._last_resync_ticker = ticker
         self._last_resync_mono = now
         self._books.pop(ticker, None)
         self._resubscribe_event.set()
-        logger.warning("kalshi_ws_resync_ticker ticker=%s reason=%s", ticker, reason)
+        logger.warning(
+            "kalshi_ws_resync_ticker ticker=%s reason=%s "
+            "anomaly_count=%d bad_deltas_since_last_resync=%d "
+            "since_last_resync_s=%s",
+            ticker,
+            reason,
+            trigger_count,
+            bad_deltas,
+            f"{since_last_s:.1f}" if since_last_s is not None else "none",
+        )
 
     def _schedule_full_resync(self, reason: str) -> None:
         """Clear all books and request fresh snapshots for active tickers."""
+        now = time.monotonic()
+        since_last_s: float | None = None
+        if self._last_resync_mono is not None:
+            since_last_s = now - self._last_resync_mono
+        total_bad = sum(self._bad_deltas_since_last_resync.values())
+        anomaly_total = sum(self._anomaly_counts.values())
         self._stats["resync_full"] += 1
         self._last_resync_reason = reason
         self._last_resync_ticker = None
-        self._last_resync_mono = time.monotonic()
+        self._last_resync_mono = now
+        self._bad_deltas_since_last_resync.clear()
         self._books.clear()
         self._resubscribe_event.set()
-        logger.warning("kalshi_ws_resync_full reason=%s", reason)
+        logger.warning(
+            "kalshi_ws_resync_full reason=%s anomaly_total=%d "
+            "bad_deltas_since_last_resync=%d since_last_resync_s=%s",
+            reason,
+            anomaly_total,
+            total_bad,
+            f"{since_last_s:.1f}" if since_last_s is not None else "none",
+        )
 
     @property
     def last_update_age_s(self) -> float | None:
