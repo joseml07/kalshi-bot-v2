@@ -60,6 +60,11 @@ def kelly_size(
     max_by_cost = math.floor(float(MAX_COST_DOLLARS) / price)
     contracts = min(contracts, max_by_cost, MAX_CONTRACTS)
     if contracts < MIN_CONTRACTS:
+        # Kelly said bet something (dollar_amount > 0) but the floor rounded
+        # to zero on a small bankroll. Take the single-contract bet if it
+        # fits the bankroll — otherwise refuse.
+        if dollar_amount > 0 and price <= float(bankroll):
+            return MIN_CONTRACTS
         return 0
     return contracts
 

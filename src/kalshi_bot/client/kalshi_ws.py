@@ -39,7 +39,10 @@ _LevelMap = dict[int, int]
 # Counter decays (does not reset) on good deltas, so bursts accumulate even
 # when interleaved with valid traffic — a pure reset-on-good was observed to
 # never fire in production because good and bad deltas arrive concurrently.
-_ANOMALY_RESYNC_THRESHOLD = 3
+# Set high because negative_qty no longer contributes (clamped silently); only
+# structural anomalies (bad_side, parse_error, missing_fields) count, and
+# those are genuinely rare.
+_ANOMALY_RESYNC_THRESHOLD = 25
 
 # Minimum seconds between consecutive resyncs for the same ticker, to avoid
 # thrashing when the upstream feed is genuinely degraded.
@@ -47,7 +50,9 @@ _RESYNC_COOLDOWN_S = 10.0
 
 # If the sum of per-ticker anomaly counters crosses this while any single
 # ticker is below its own threshold, escalate to a full resync of all books.
-_FULL_RESYNC_BURST_THRESHOLD = 10
+# Kept above the per-ticker threshold so a single hot ticker trips its own
+# resync first; burst only fires when multiple tickers are flaking together.
+_FULL_RESYNC_BURST_THRESHOLD = 50
 
 
 @dataclass
@@ -116,6 +121,12 @@ class KalshiOrderbookFeed:
         # In-memory orderbook state per ticker.
         self._books: dict[str, _BookState] = {}
 
+        # Tickers that have been cleared by a resync and are waiting for a
+        # fresh snapshot. Deltas for these tickers are dropped to prevent
+        # stale in-flight deltas from the previous subscription from being
+        # applied against the new snapshot and producing negative_qty.
+        self._awaiting_snapshot: set[str] = set()
+
         self._running = False
         self._ws: ws_legacy.WebSocketClientProtocol | None = None
 
@@ -129,6 +140,7 @@ class KalshiOrderbookFeed:
             "messages_snapshot": 0,
             "messages_delta": 0,
             "delta_before_snapshot": 0,
+            "delta_dropped_awaiting_snapshot": 0,
             "delta_missing_fields": 0,
             "delta_parse_error": 0,
             "delta_bad_side": 0,
@@ -189,6 +201,11 @@ class KalshiOrderbookFeed:
         for t in list(self._books):
             if t not in tickers:
                 del self._books[t]
+        # Drop barrier entries for tickers we no longer care about; any new
+        # ticker will be added to the barrier when the subscribe fires at
+        # reconnect/resubscribe time.
+        self._awaiting_snapshot.intersection_update(tickers)
+        self._awaiting_snapshot.update(tickers - set(self._books))
         self._tickers = set(tickers)
         self._resubscribe_event.set()
 
@@ -242,6 +259,9 @@ class KalshiOrderbookFeed:
         async with ws_legacy.connect(self._ws_url, extra_headers=headers) as ws:
             self._ws = ws
             self._last_seq_by_sid.clear()
+            # Every tracked ticker must receive a fresh snapshot on this new
+            # connection before we trust its book again.
+            self._awaiting_snapshot.update(self._tickers)
             logger.info("kalshi_ws_connected url=%s", self._ws_url)
 
             # Subscribe to whatever tickers are active right now.
@@ -379,6 +399,7 @@ class KalshiOrderbookFeed:
             no=no_map,
             updated_at=datetime.now(timezone.utc),
         )
+        self._awaiting_snapshot.discard(ticker)
         self._anomaly_counts[ticker] = 0
         self._last_update_mono = time.monotonic()
         if self._eval_trigger is not None:
@@ -401,6 +422,13 @@ class KalshiOrderbookFeed:
         it is removed entirely.
         """
         ticker: str = data.get("market_ticker", "")
+        if ticker in self._awaiting_snapshot:
+            # Post-resync: drop any delta for this ticker until a fresh
+            # snapshot lands. Stale deltas from the pre-resync stream would
+            # otherwise be applied against the new book state and produce
+            # spurious negative_qty events.
+            self._stats["delta_dropped_awaiting_snapshot"] += 1
+            return
         state = self._books.get(ticker)
         if state is None:
             # Delta arrived before snapshot — ignore safely; snapshot will follow.
@@ -443,15 +471,11 @@ class KalshiOrderbookFeed:
         if new_qty <= 0:
             book.pop(price_cents, None)
             if new_qty < 0:
+                # Clamp silently. Kalshi occasionally sends deltas that
+                # over-subtract (recovered snapshot, network reorder, etc.);
+                # this is not a structural corruption and should not cascade
+                # into a resync. Still count for observability.
                 self._stats["negative_qty"] += 1
-                logger.warning(
-                    "kalshi_ws_negative_qty ticker=%s side=%s price=%d qty=%d",
-                    ticker,
-                    side,
-                    price_cents,
-                    new_qty,
-                )
-                self._mark_anomaly(ticker, "negative_qty")
         else:
             book[price_cents] = new_qty
             # Do NOT reset self._anomaly_counts[ticker] here. Resetting on every
@@ -502,6 +526,7 @@ class KalshiOrderbookFeed:
         self._last_resync_reason = reason
         self._last_resync_ticker = ticker
         self._last_resync_mono = now
+        self._awaiting_snapshot.add(ticker)
         self._books.pop(ticker, None)
         self._resubscribe_event.set()
         logger.warning(
@@ -528,6 +553,7 @@ class KalshiOrderbookFeed:
         self._last_resync_ticker = None
         self._last_resync_mono = now
         self._bad_deltas_since_last_resync.clear()
+        self._awaiting_snapshot.update(self._tickers)
         self._books.clear()
         self._resubscribe_event.set()
         logger.warning(

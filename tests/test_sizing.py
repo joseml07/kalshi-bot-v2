@@ -49,3 +49,23 @@ def test_quarter_kelly_size_matches_kelly_size_quarter() -> None:
     assert quarter_kelly_size(0.7, 0.4, bankroll) == kelly_size(
         0.7, 0.4, bankroll, fraction=0.25
     )
+
+
+def test_kelly_size_floor_returns_min_contracts_on_tiny_bankroll() -> None:
+    """Quarter-Kelly math on a $10 bankroll rounds to 0 on marginal edges.
+
+    Before the fix we'd return 0 and skip a valid +EV signal. Now we take
+    one contract so long as the single-contract cost fits the bankroll.
+    """
+    size = kelly_size(0.55, 0.40, Decimal("10.00"), fraction=0.25)
+    assert size == 1
+
+
+def test_kelly_size_floor_still_refuses_negative_ev() -> None:
+    """The MIN_CONTRACTS rescue path must not accept losing bets."""
+    assert kelly_size(0.40, 0.50, Decimal("10.00"), fraction=0.25) == 0
+
+
+def test_kelly_size_floor_refuses_when_contract_exceeds_bankroll() -> None:
+    """If one contract costs more than the bankroll, refuse to trade."""
+    assert kelly_size(0.95, 0.90, Decimal("0.50"), fraction=0.25) == 0

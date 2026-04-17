@@ -75,11 +75,19 @@ def test_apply_delta_invalid_side_does_not_mutate_book() -> None:
     assert orderbook.yes_levels[0].quantity == 100
 
 
-def test_anomaly_threshold_triggers_ticker_resync() -> None:
+def test_negative_qty_is_clamped_silently() -> None:
+    """Negative qty should clamp to zero without triggering a ticker resync.
+
+    Kalshi occasionally over-subtracts — it's a transient feed artifact, not
+    structural corruption, and treating it as grounds for resubscription
+    produces feedback loops (production logged 51k+ negative_qty events and
+    3,650 resyncs in 13 hours).
+    """
     feed = _make_feed()
     feed._apply_snapshot({"market_ticker": TICKER, "yes": [["45", "100"]], "no": []})
+    feed._resubscribe_event.clear()
 
-    for _ in range(5):
+    for _ in range(30):
         feed._apply_delta(
             {
                 "market_ticker": TICKER,
@@ -89,67 +97,56 @@ def test_anomaly_threshold_triggers_ticker_resync() -> None:
             }
         )
 
-    assert feed.get_orderbook(TICKER) is None
-    assert feed._resubscribe_event.is_set()
+    diag = feed.diagnostics()
+    # Level is dropped from the book but the ticker is still tracked.
+    assert diag["negative_qty"] >= 1
+    assert diag["resync_ticker"] == 0
+    assert feed.get_orderbook(TICKER) is not None
+    assert not feed._resubscribe_event.is_set()
 
 
-def test_interleaved_bad_and_good_deltas_still_trigger_resync() -> None:
-    """Regression: a good delta between bad ones must NOT erase the anomaly
-    counter. In production the reset-on-good logic let thousands of
-    negative_qty events accumulate without ever triggering a resync because
-    valid deltas kept arriving concurrently and resetting the counter.
-    """
+def test_anomaly_threshold_triggers_ticker_resync() -> None:
+    """Structural anomalies (bad side) still trigger a ticker resync."""
     feed = _make_feed()
-    feed._apply_snapshot(
-        {"market_ticker": TICKER, "yes": [["45", "10000"]], "no": []}
-    )
+    feed._apply_snapshot({"market_ticker": TICKER, "yes": [["45", "100"]], "no": []})
     feed._resubscribe_event.clear()
 
-    # Alternate: bad, good, bad, good, ... for 10 bad and 10 good.
-    for _ in range(10):
+    # 25 bad_side deltas cross the per-ticker threshold.
+    for _ in range(25):
         feed._apply_delta(
             {
                 "market_ticker": TICKER,
-                "side": "yes",
+                "side": "bogus",
                 "price_dollars": "0.45",
-                "delta_fp": "-999999.00",  # drives new_qty negative
-            }
-        )
-        feed._apply_delta(
-            {
-                "market_ticker": TICKER,
-                "side": "yes",
-                "price_dollars": "0.46",
-                "delta_fp": "1.00",  # valid, positive delta on a fresh level
+                "delta_fp": "-1.00",
             }
         )
 
-    diag = feed.diagnostics()
-    assert diag["resync_ticker"] >= 1, (
-        "Interleaved good deltas must not keep resetting the anomaly counter"
-    )
+    assert feed.get_orderbook(TICKER) is None
+    assert feed._resubscribe_event.is_set()
+    assert TICKER in feed._awaiting_snapshot
 
 
 def test_full_resync_on_anomaly_burst_across_tickers() -> None:
-    """If the whole feed is flaky, cumulative per-ticker anomalies should
-    escalate to a full resync even if no single ticker crosses its threshold.
+    """Cumulative per-ticker structural anomalies should escalate to a full
+    resync even if no single ticker crosses its own threshold.
     """
     feed = _make_feed()
     tickers = [f"KX{sym}15M-TEST" for sym in ("BTC", "ETH", "SOL", "XRP", "DOGE")]
+    feed._tickers = set(tickers)
     for t in tickers:
         feed._apply_snapshot({"market_ticker": t, "yes": [["45", "1000"]], "no": []})
 
-    # 2 bad deltas each on 5 tickers → sum of per-ticker counts = 10. No
-    # single ticker hits threshold (3). The final delta (sum=10) crosses the
-    # burst threshold and triggers a full resync of all books.
+    # 10 bad-side deltas each on 5 tickers → sum of per-ticker counts = 50,
+    # crossing the burst threshold (50). No single ticker hits threshold (25).
     for t in tickers:
-        for _ in range(2):
+        for _ in range(10):
             feed._apply_delta(
                 {
                     "market_ticker": t,
-                    "side": "yes",
+                    "side": "bogus",
                     "price_dollars": "0.45",
-                    "delta_fp": "-999999.00",
+                    "delta_fp": "-1.00",
                 }
             )
 
@@ -186,19 +183,70 @@ def test_diagnostics_exposes_ws_health_counters() -> None:
     feed = _make_feed()
     feed._apply_snapshot({"market_ticker": TICKER, "yes": [["45", "100"]], "no": []})
 
-    for _ in range(5):
+    # Structural corruption (bad side) still triggers a ticker resync.
+    for _ in range(25):
         feed._apply_delta(
             {
                 "market_ticker": TICKER,
-                "side": "yes",
+                "side": "bogus",
                 "price_dollars": "0.45",
-                "delta_fp": "-1000.00",
+                "delta_fp": "-1.00",
             }
         )
 
     diag = feed.diagnostics()
     assert diag["messages_snapshot"] == 0
     assert diag["messages_delta"] == 0
-    assert diag["negative_qty"] >= 1
+    assert diag["delta_bad_side"] >= 1
     assert diag["resync_ticker"] >= 1
     assert diag["last_resync_ticker"] == TICKER
+
+
+def test_resync_blocks_stale_deltas_until_fresh_snapshot() -> None:
+    """After a ticker resync, deltas from the pre-resync stream must be
+    dropped — not applied against a partially-rebuilt book — until a fresh
+    snapshot lands and the barrier clears.
+    """
+    feed = _make_feed()
+    feed._tickers = {TICKER}
+    feed._apply_snapshot({"market_ticker": TICKER, "yes": [["45", "100"]], "no": []})
+    feed._resubscribe_event.clear()
+
+    # Simulate the resync directly (bypass the anomaly counter path).
+    feed._schedule_ticker_resync(TICKER, "test")
+    assert TICKER in feed._awaiting_snapshot
+    assert feed.get_orderbook(TICKER) is None
+
+    # A stale in-flight delta arrives after the book was cleared but before
+    # the new snapshot lands. It must be dropped against the barrier.
+    feed._apply_delta(
+        {
+            "market_ticker": TICKER,
+            "side": "yes",
+            "price_dollars": "0.45",
+            "delta_fp": "-50.00",
+        }
+    )
+    diag = feed.diagnostics()
+    assert diag["delta_dropped_awaiting_snapshot"] == 1
+    assert diag["negative_qty"] == 0
+    assert diag["delta_before_snapshot"] == 0
+
+    # Fresh snapshot for the resubscribed ticker lifts the barrier.
+    feed._apply_snapshot({"market_ticker": TICKER, "yes": [["45", "80"]], "no": []})
+    assert TICKER not in feed._awaiting_snapshot
+
+    # Subsequent deltas apply normally against the fresh book.
+    feed._apply_delta(
+        {
+            "market_ticker": TICKER,
+            "side": "yes",
+            "price_dollars": "0.45",
+            "delta_fp": "-10.00",
+        }
+    )
+    result = feed.get_orderbook(TICKER)
+    assert result is not None
+    orderbook, _ = result
+    assert orderbook.yes_levels[0].quantity == 70
+    assert feed.diagnostics()["negative_qty"] == 0

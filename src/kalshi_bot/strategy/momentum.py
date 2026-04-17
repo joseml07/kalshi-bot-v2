@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -10,6 +11,8 @@ from kalshi_bot.models.market import OrderBook
 from kalshi_bot.strategy.fees import maker_fee, taker_fee
 from kalshi_bot.strategy.probability import estimate_up_probability
 from kalshi_bot.strategy.signals import Side, Signal, StrategyName
+
+logger = logging.getLogger(__name__)
 
 
 def _sign(value: float) -> int:
@@ -52,6 +55,16 @@ def evaluate_momentum(
     mom_sign = _sign(momentum)
     imb_sign = _sign(imbalance)
     if mom_sign == 0 or imb_sign == 0 or mom_sign != imb_sign:
+        logger.debug(
+            "momentum_obi_mismatch ticker=%s momentum=%.5f imbalance=%.0f "
+            "mom_sign=%d imb_sign=%d secs=%d",
+            ticker,
+            momentum,
+            imbalance,
+            mom_sign,
+            imb_sign,
+            seconds_remaining,
+        )
         return None
 
     up_prob = estimate_up_probability(
