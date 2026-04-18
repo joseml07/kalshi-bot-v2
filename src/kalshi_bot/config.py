@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     lwm_decision_max_s: int = Field(default=540)
     lwm_min_price_change: float = Field(default=0.0003)
     lwm_min_book_sum: float = Field(default=0.90)
-    lwm_max_book_sum: float = Field(default=1.005)
+    lwm_max_book_sum: float = Field(default=1.50)
     lwm_min_price: float = Field(default=0.05)
     lwm_max_price: float = Field(default=0.95)
     lwm_yes_only: bool = Field(default=True)

@@ -68,10 +68,22 @@ def test_skips_weak_price_move() -> None:
     assert evaluate_lwm(w, w.ticker, ob) is None
 
 
-def test_skips_implied_crossed_book() -> None:
+def test_allows_implied_crossed_book() -> None:
+    # yes_bid + no_bid > 1 is a normal Kalshi state (independent YES/NO
+    # orderbooks). The strategy must accept it and emit a signal.
     w = _make_window(0.005, 120)
     ob = _book(yes_bid="0.62", no_bid="0.66")  # sum 1.28
-    assert evaluate_lwm(w, w.ticker, ob) is None
+    sig = evaluate_lwm(w, w.ticker, ob, edge_threshold=0.01)
+    assert sig is not None
+    assert sig.side is Side.YES
+
+
+def test_skips_book_sum_above_hard_ceiling() -> None:
+    # Deep implied-cross still tradeable, but a pathological 1.8+ sum
+    # signals genuinely broken data and is still rejected.
+    w = _make_window(0.005, 120)
+    ob = _book(yes_bid="0.95", no_bid="0.95")  # sum 1.90
+    assert evaluate_lwm(w, w.ticker, ob, max_book_sum=1.50) is None
 
 
 def test_skips_one_sided_book() -> None:

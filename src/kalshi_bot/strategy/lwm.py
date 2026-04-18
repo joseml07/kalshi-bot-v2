@@ -16,9 +16,13 @@ Defaults:
   while excluding the noisy first minute of the window.
 - min_price_change=0.0003 — filters out the noise band where
   `price_change_pct` sign is essentially random.
-- Book gates `[0.90, 1.005]` — skip implied-crossed and one-sided
-  snapshots, the same shapes the old crossed-book risk veto used to
-  block (and that quietly poisoned the live momentum strategy).
+- Book gates `[0.90, 1.50]` — the floor catches genuinely stale or
+  one-sided books; the ceiling is loose because implied-crossed
+  states (`yes_bid + no_bid > 1`) are normal Kalshi microstructure
+  near close and represent real, executable trades. An earlier,
+  tighter ceiling (1.005) was calibrated on a historical snapshot
+  where crossed books were ~0.1% of rows, but live they are the
+  dominant state — tightening the gate starved the strategy.
 """
 
 from __future__ import annotations
@@ -100,7 +104,7 @@ def evaluate_lwm(
     decision_max_s: int = 540,
     min_price_change: float = 0.0003,
     min_book_sum: float = 0.90,
-    max_book_sum: float = 1.005,
+    max_book_sum: float = 1.50,
     min_price: float = 0.05,
     max_price: float = 0.95,
     yes_only: bool = True,
@@ -122,7 +126,7 @@ def evaluate_lwm(
         return None
     book_sum = float(yes_bid + no_bid)
     if not (min_book_sum <= book_sum <= max_book_sum):
-        logger.info(
+        logger.debug(
             "lwm_book_gate_skip ticker=%s yes_bid=%s no_bid=%s sum=%.4f",
             ticker, yes_bid, no_bid, book_sum,
         )
