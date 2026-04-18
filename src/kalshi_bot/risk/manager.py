@@ -165,19 +165,25 @@ class RiskManager:
             raise RiskVetoError(f"Already traded {signal.ticker} ({locked_side} side)")
 
     def _check_crossed_book(self, orderbook: OrderBook) -> None:
-        """Reject trades when the cached book is crossed (ask <= bid).
+        """Observe (don't veto) implied-crossed books.
 
-        A crossed book is impossible in a healthy market and indicates the
-        local WS orderbook state is corrupted. Trading on it produces bogus
-        edge estimates. Better to sit out until auto-resync recovers.
+        `best_yes_ask` is synthetic (1 - best_no_bid). On Kalshi, YES bids
+        and NO bids are independent orderbooks, so `yes_bid + no_bid > 1`
+        is a real market state, not corruption. Real WS corruption is
+        caught by the feed-level health counters (delta_before_snapshot,
+        negative_qty, sequence_gap) plus the staleness gate.
         """
         best_yes_bid = orderbook.best_yes_bid
-        best_yes_ask = orderbook.best_yes_ask
-        if best_yes_bid is None or best_yes_ask is None:
+        best_no_bid = orderbook.best_no_bid
+        if best_yes_bid is None or best_no_bid is None:
             return
-        if best_yes_ask <= best_yes_bid:
-            raise RiskVetoError(
-                f"Crossed book: yes_ask={best_yes_ask} <= yes_bid={best_yes_bid}"
+        book_sum = float(best_yes_bid + best_no_bid)
+        if book_sum > 1.05:
+            logger.info(
+                "crossed_book_observed yes_bid=%s no_bid=%s sum=%.4f",
+                best_yes_bid,
+                best_no_bid,
+                book_sum,
             )
 
 

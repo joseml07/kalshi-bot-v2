@@ -9,8 +9,17 @@ from decimal import Decimal
 import pytest
 
 from kalshi_bot.config import Settings
+from kalshi_bot.models.market import OrderBook, OrderBookLevel
 from kalshi_bot.risk.manager import KILL_SWITCH_FILE, RiskManager, RiskVetoError
 from kalshi_bot.strategy.signals import Side, Signal, StrategyName
+
+
+def _book(yes_bid: str, no_bid: str) -> OrderBook:
+    return OrderBook(
+        ticker="KXBTC15M-TEST",
+        yes_levels=[OrderBookLevel(price=Decimal(yes_bid), quantity=100)],
+        no_levels=[OrderBookLevel(price=Decimal(no_bid), quantity=100)],
+    )
 
 
 def _settings() -> Settings:
@@ -87,3 +96,21 @@ def test_side_locking_persists_for_window_lifetime() -> None:
     time.sleep(0.01)
     with pytest.raises(RiskVetoError):
         rm.check(_signal(t, side=Side.YES))
+
+
+def test_implied_crossed_book_does_not_veto() -> None:
+    """yes_bid + no_bid > 1 is a real Kalshi state, not corruption.
+
+    The synthetic yes_ask = 1 - no_bid will fall below the live yes_bid;
+    the old check vetoed these and starved the bot of trades. Now we
+    only observe.
+    """
+    rm = RiskManager(_settings())
+    book = _book(yes_bid="0.62", no_bid="0.66")  # sum 1.28
+    rm.check(_signal(), book)
+
+
+def test_uncrossed_book_does_not_veto() -> None:
+    rm = RiskManager(_settings())
+    book = _book(yes_bid="0.45", no_bid="0.50")  # sum 0.95
+    rm.check(_signal(), book)
