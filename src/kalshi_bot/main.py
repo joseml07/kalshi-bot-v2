@@ -77,6 +77,7 @@ from kalshi_bot.models.price import PriceTick
 from kalshi_bot.models.market import Market
 from kalshi_bot.risk.manager import RiskManager, RiskVetoError
 from kalshi_bot.strategy.fees import maker_fee, taker_fee
+from kalshi_bot.strategy.lwm import evaluate_lwm
 from kalshi_bot.strategy.momentum import evaluate_momentum
 from kalshi_bot.strategy.probability import estimate_k_from_vol, estimate_up_probability
 
@@ -116,8 +117,27 @@ def _infer_no_signal_block(
     orderbook: Any,
     settings: Settings,
 ) -> str:
-    """Best-effort likely block reason when evaluate_momentum returns None."""
+    """Best-effort likely block reason when the strategy returns no signal."""
     seconds_remaining = window.seconds_remaining
+
+    if settings.strategy_name == "lwm":
+        if not (
+            settings.lwm_decision_min_s <= seconds_remaining <= settings.lwm_decision_max_s
+        ):
+            return "lwm_outside_time_window"
+        if abs(window.price_change_pct) < settings.lwm_min_price_change:
+            return "lwm_weak_price_move"
+        yes_bid = orderbook.best_yes_bid
+        no_bid = orderbook.best_no_bid
+        if yes_bid is None or no_bid is None:
+            return "lwm_book_missing"
+        book_sum = float(yes_bid + no_bid)
+        if not (settings.lwm_min_book_sum <= book_sum <= settings.lwm_max_book_sum):
+            return "lwm_bad_book_sum"
+        if window.price_change_pct < 0 and settings.lwm_yes_only:
+            return "lwm_no_side_disabled"
+        return "lwm_edge_below_threshold"
+
     if not (
         settings.momentum_min_time <= seconds_remaining <= settings.momentum_max_time
     ):
@@ -691,18 +711,36 @@ async def _fast_eval_loop(
                 )
                 continue
 
-            signal = evaluate_momentum(
-                window,
-                ticker,
-                orderbook,
-                edge_threshold=settings.edge_threshold,
-                k=settings.logistic_k,
-                min_time=settings.momentum_min_time,
-                max_time=settings.momentum_max_time,
-                min_price=settings.min_trade_price,
-                max_price=settings.max_trade_price,
-                maker_first=settings.maker_first,
-            )
+            if settings.strategy_name == "lwm":
+                signal = evaluate_lwm(
+                    window,
+                    ticker,
+                    orderbook,
+                    edge_threshold=settings.edge_threshold,
+                    decision_min_s=settings.lwm_decision_min_s,
+                    decision_max_s=settings.lwm_decision_max_s,
+                    min_price_change=settings.lwm_min_price_change,
+                    min_book_sum=settings.lwm_min_book_sum,
+                    max_book_sum=settings.lwm_max_book_sum,
+                    min_price=settings.lwm_min_price,
+                    max_price=settings.lwm_max_price,
+                    yes_only=settings.lwm_yes_only,
+                    no_side_edge_bonus=settings.lwm_no_side_edge_bonus,
+                    maker_first=settings.maker_first,
+                )
+            else:
+                signal = evaluate_momentum(
+                    window,
+                    ticker,
+                    orderbook,
+                    edge_threshold=settings.edge_threshold,
+                    k=settings.logistic_k,
+                    min_time=settings.momentum_min_time,
+                    max_time=settings.momentum_max_time,
+                    min_price=settings.min_trade_price,
+                    max_price=settings.max_trade_price,
+                    maker_first=settings.maker_first,
+                )
             last_eval_mono[symbol] = now
 
             if signal is None:
@@ -1045,18 +1083,36 @@ async def _slow_housekeeping_loop(
                     k=dynamic_k,
                 )
 
-                signal_for_record = evaluate_momentum(
-                    window,
-                    ticker,
-                    orderbook,
-                    edge_threshold=settings.edge_threshold,
-                    k=settings.logistic_k,
-                    min_time=settings.momentum_min_time,
-                    max_time=settings.momentum_max_time,
-                    min_price=settings.min_trade_price,
-                    max_price=settings.max_trade_price,
-                    maker_first=settings.maker_first,
-                )
+                if settings.strategy_name == "lwm":
+                    signal_for_record = evaluate_lwm(
+                        window,
+                        ticker,
+                        orderbook,
+                        edge_threshold=settings.edge_threshold,
+                        decision_min_s=settings.lwm_decision_min_s,
+                        decision_max_s=settings.lwm_decision_max_s,
+                        min_price_change=settings.lwm_min_price_change,
+                        min_book_sum=settings.lwm_min_book_sum,
+                        max_book_sum=settings.lwm_max_book_sum,
+                        min_price=settings.lwm_min_price,
+                        max_price=settings.lwm_max_price,
+                        yes_only=settings.lwm_yes_only,
+                        no_side_edge_bonus=settings.lwm_no_side_edge_bonus,
+                        maker_first=settings.maker_first,
+                    )
+                else:
+                    signal_for_record = evaluate_momentum(
+                        window,
+                        ticker,
+                        orderbook,
+                        edge_threshold=settings.edge_threshold,
+                        k=settings.logistic_k,
+                        min_time=settings.momentum_min_time,
+                        max_time=settings.momentum_max_time,
+                        min_price=settings.min_trade_price,
+                        max_price=settings.max_trade_price,
+                        maker_first=settings.maker_first,
+                    )
 
                 if recorder is not None:
                     spread = (

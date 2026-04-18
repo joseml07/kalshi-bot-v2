@@ -27,7 +27,10 @@ class Settings(BaseSettings):
     max_concurrent_positions: int = Field(default=3)
     kelly_fraction: float = Field(default=0.25, ge=0.01, le=1.0)
 
-    # Momentum strategy
+    # Strategy selection: "lwm" (default, late-window momentum) or "momentum"
+    strategy_name: str = Field(default="lwm", pattern=r"^(lwm|momentum)$")
+
+    # Shared strategy gates
     edge_threshold: float = Field(default=0.06)
     momentum_min_time: int = Field(default=30)
     momentum_max_time: int = Field(default=480)
@@ -35,6 +38,17 @@ class Settings(BaseSettings):
     max_trade_price: float = Field(default=0.80)
     logistic_k: float = Field(default=150.0)
     symbols: str = Field(default="BTC")
+
+    # LWM strategy
+    lwm_decision_min_s: int = Field(default=30)
+    lwm_decision_max_s: int = Field(default=540)
+    lwm_min_price_change: float = Field(default=0.0003)
+    lwm_min_book_sum: float = Field(default=0.90)
+    lwm_max_book_sum: float = Field(default=1.005)
+    lwm_min_price: float = Field(default=0.05)
+    lwm_max_price: float = Field(default=0.95)
+    lwm_yes_only: bool = Field(default=True)
+    lwm_no_side_edge_bonus: float = Field(default=0.04)
 
     # Maker-first execution
     maker_first: bool = Field(default=True)
