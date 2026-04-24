@@ -392,6 +392,8 @@ def api_diagnostics(limit: int = 30) -> dict[str, Any]:
         incident_flags.append("ws_resync_full_seen")
     if float(ws_diag.get("resync_ticker", 0) or 0) > 0:
         incident_flags.append("ws_resync_ticker_seen")
+    if float(health.get("eval_stale_symbols", 0) or 0) > 0:
+        incident_flags.append("eval_loop_stalled")
 
     endpoint_catalog = {
         "health": ["/api/health", "/api/diagnostics", "/api/live", "/ws/live"],

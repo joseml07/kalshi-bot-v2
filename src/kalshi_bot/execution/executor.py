@@ -6,12 +6,14 @@ import contextlib
 import logging
 import sqlite3
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 
 from kalshi_bot.client.kalshi import KalshiClient
 from kalshi_bot.config import Settings
+from kalshi_bot.models.market import OrderBook
 from kalshi_bot.risk.manager import RiskManager
 from kalshi_bot.risk.sizing import DEFAULT_KELLY_FRACTION, kelly_size
 from kalshi_bot.strategy.fees import maker_fee, taker_fee
@@ -21,6 +23,14 @@ logger = logging.getLogger(__name__)
 
 ORDER_TIMEOUT_SECONDS = 60
 DB_PATH = "trades.db"
+
+# Promote-to-taker safety gates. An earlier version blindly re-placed at the
+# stale maker-era taker_price, which for a momentum strategy is the worst
+# possible moment: the market has run away from us by 90s, the edge is gone,
+# and we were still paying the taker fee. These constants let us abort instead.
+PROMOTE_MIN_NET_EDGE = 0.02
+PROMOTE_FRESH_ORDERBOOK_MAX_AGE_S = 5.0
+PROMOTE_BIG_PRICE_MOVE = 0.03
 
 
 class OrderState(str, Enum):
@@ -46,6 +56,7 @@ class TrackedOrder:
         self.order_id = order_id
         self.contracts = contracts
         self.price = price
+        self.intended_price: Decimal = price
         self.state = OrderState.PENDING
         self.placed_at = time.monotonic()
         self.fill_time: float | None = None
@@ -86,6 +97,22 @@ class Executor:
         self._orders: dict[str, TrackedOrder] = {}
         self._db = _init_db(db_path)
         self._settings = settings
+        self._get_orderbook: (
+            Callable[[str], tuple[OrderBook, datetime] | None] | None
+        ) = None
+
+    def attach_orderbook_source(
+        self,
+        fn: Callable[[str], tuple[OrderBook, datetime] | None],
+    ) -> None:
+        """Register a live orderbook lookup used for promote-time edge checks.
+
+        The callable returns the latest cached (orderbook, received_at) pair
+        for a ticker, or None if nothing has been received. `ws_feed.get_orderbook`
+        on `KalshiOrderbookFeed` is the production wiring — keeping this as a
+        plain callable avoids coupling the executor to the WS feed class.
+        """
+        self._get_orderbook = fn
 
     async def submit(self, signal: Signal, bankroll: Decimal) -> TrackedOrder | None:
         """Size, place, and track an order for the given signal.
@@ -188,10 +215,25 @@ class Executor:
                 if fill_price:
                     order.price = Decimal(str(fill_price))
 
+                now_mono = time.monotonic()
                 order.state = OrderState.FILLED
-                order.fill_time = time.monotonic()
+                order.fill_time = now_mono
                 self._risk.record_fill(
                     order.signal.ticker, side=order.signal.side.value
+                )
+                slippage = float(order.price) - float(order.intended_price)
+                logger.info(
+                    "maker_filled",
+                    extra={
+                        "order_id": oid,
+                        "ticker": order.signal.ticker,
+                        "route": order.route,
+                        "intended": float(order.intended_price),
+                        "filled": float(order.price),
+                        "slippage": slippage,
+                        "latency_s": now_mono - order.placed_at,
+                        "contracts": order.contracts,
+                    },
                 )
                 logger.info(
                     "Confirmed fill: %s (%s) @ %s",
@@ -244,8 +286,65 @@ class Executor:
                 logger.info("Maker order %s already filled on cancel attempt", oid)
                 continue
 
-            taker_price = order.taker_price
-            if taker_price is None:
+            stale_taker_price = order.taker_price
+            if stale_taker_price is None:
+                self._risk.record_settlement(order.signal.ticker, Decimal("0"))
+                self._update_trade_pnl(oid, Decimal("0"))
+                continue
+
+            fresh_taker_price = self._fresh_taker_price(order)
+            if fresh_taker_price is None:
+                logger.info(
+                    "skip_taker_promote_no_orderbook",
+                    extra={
+                        "order_id": oid,
+                        "ticker": order.signal.ticker,
+                        "side": order.signal.side.value,
+                        "stale_taker_price": float(stale_taker_price),
+                    },
+                )
+                self._risk.record_settlement(order.signal.ticker, Decimal("0"))
+                self._update_trade_pnl(oid, Decimal("0"))
+                continue
+
+            fresh_fee_per = float(
+                taker_fee(order.contracts, float(fresh_taker_price))
+            ) / order.contracts
+            fresh_net_edge = (
+                order.signal.real_prob
+                - float(fresh_taker_price)
+                - fresh_fee_per
+            )
+
+            price_move = abs(float(fresh_taker_price) - float(stale_taker_price))
+            if price_move > PROMOTE_BIG_PRICE_MOVE:
+                logger.info(
+                    "taker_promote_big_price_move",
+                    extra={
+                        "order_id": oid,
+                        "ticker": order.signal.ticker,
+                        "stale": float(stale_taker_price),
+                        "fresh": float(fresh_taker_price),
+                        "move": price_move,
+                    },
+                )
+
+            if fresh_net_edge < PROMOTE_MIN_NET_EDGE:
+                logger.info(
+                    "skip_taker_promote_edge_gone",
+                    extra={
+                        "order_id": oid,
+                        "ticker": order.signal.ticker,
+                        "side": order.signal.side.value,
+                        "stale_taker_price": float(stale_taker_price),
+                        "fresh_taker_price": float(fresh_taker_price),
+                        "real_prob": order.signal.real_prob,
+                        "fresh_net_edge": fresh_net_edge,
+                        "min_net_edge": PROMOTE_MIN_NET_EDGE,
+                    },
+                )
+                self._risk.record_settlement(order.signal.ticker, Decimal("0"))
+                self._update_trade_pnl(oid, Decimal("0"))
                 continue
 
             try:
@@ -253,7 +352,7 @@ class Executor:
                     ticker=order.signal.ticker,
                     action="buy",
                     side=order.signal.side.value,
-                    price_dollars=taker_price,
+                    price_dollars=fresh_taker_price,
                     count=order.contracts,
                 )
                 new_oid = str(taker_resp["order_id"])
@@ -261,21 +360,54 @@ class Executor:
                     signal=order.signal,
                     order_id=new_oid,
                     contracts=order.contracts,
-                    price=taker_price,
+                    price=fresh_taker_price,
                 )
                 new_order.route = "taker_promoted"
                 self._orders[new_oid] = new_order
                 self._log_trade(
-                    order.signal, new_oid, order.contracts, taker_price, None
+                    order.signal,
+                    new_oid,
+                    order.contracts,
+                    fresh_taker_price,
+                    None,
                 )
                 logger.info(
-                    "Promoted to taker: %s -> %s @ %s", oid, new_oid, taker_price
+                    "Promoted to taker: %s -> %s @ %s (fresh, stale was %s, edge=%.4f)",
+                    oid,
+                    new_oid,
+                    fresh_taker_price,
+                    stale_taker_price,
+                    fresh_net_edge,
                 )
             except Exception:
                 logger.exception("Taker promotion failed for %s", oid)
                 self._risk.record_settlement(order.signal.ticker, Decimal("0"))
                 failed.append(order)
         return failed
+
+    def _fresh_taker_price(self, order: TrackedOrder) -> Decimal | None:
+        """Compute the current taker price from the cached orderbook.
+
+        Returns None when no orderbook source is wired, no snapshot is
+        cached, the snapshot is older than PROMOTE_FRESH_ORDERBOOK_MAX_AGE_S,
+        or the relevant side lacks liquidity.
+        """
+        if self._get_orderbook is None:
+            return None
+        snapshot = self._get_orderbook(order.signal.ticker)
+        if snapshot is None:
+            return None
+        fresh_book, received_at = snapshot
+        age_s = (datetime.now(timezone.utc) - received_at).total_seconds()
+        if age_s > PROMOTE_FRESH_ORDERBOOK_MAX_AGE_S:
+            return None
+        if order.signal.side.value == "yes":
+            ask = fresh_book.best_yes_ask
+        else:
+            ask = fresh_book.best_no_ask
+        if ask is None:
+            return None
+        return ask
 
     async def cancel_stale(self) -> list[TrackedOrder]:
         """Cancel orders that have been pending longer than ORDER_TIMEOUT_SECONDS.

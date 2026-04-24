@@ -96,6 +96,7 @@ SERIES_MAP: dict[str, str] = {
 ORDERBOOK_STALENESS_S = 15.0
 MIN_EVAL_INTERVAL_S = 0.2
 HOUSEKEEPING_INTERVAL_S = 5.0
+EVAL_STALE_THRESHOLD_S = 180.0
 
 
 def _bump_counter(counters: dict[str, int], key: str) -> None:
@@ -488,6 +489,7 @@ async def run_bot(settings: Settings) -> None:
     eval_trigger = asyncio.Event()
     feed = CoinbaseFeed(price_queue, eval_trigger=eval_trigger)
     ws_feed = KalshiOrderbookFeed(settings, eval_trigger=eval_trigger)
+    executor.attach_orderbook_source(ws_feed.get_orderbook)
 
     await cached.refresh_balance(client, ttl_s=0.0)
     await cached.refresh_positions(client, risk, ttl_s=0.0)
@@ -601,14 +603,20 @@ async def _drain_prices(
 ) -> None:
     while not shutdown.is_set():
         try:
-            tick = await asyncio.wait_for(queue.get(), timeout=1.0)
-        except asyncio.TimeoutError:
-            continue
-        tracker.update_price(tick)
-        if eval_trigger is not None:
-            eval_trigger.set()
-        if recorder is not None:
-            recorder.record_price_tick(tick.symbol, tick.price, tick.timestamp)
+            try:
+                tick = await asyncio.wait_for(queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            tracker.update_price(tick)
+            if eval_trigger is not None:
+                eval_trigger.set()
+            if recorder is not None:
+                recorder.record_price_tick(tick.symbol, tick.price, tick.timestamp)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("drain_prices_error")
+            await asyncio.sleep(0.25)
 
 
 async def _fast_eval_loop(
@@ -649,146 +657,171 @@ async def _fast_eval_loop(
             logger.info(result, symbol=symbol, ticker=ticker, **fields)
 
     while not shutdown.is_set():
-        now_utc = datetime.now(timezone.utc)
-        if (now_utc - signal_counter_window_start[0]).total_seconds() >= 3600:
-            signal_counters.clear()
-            signal_counter_window_start[0] = now_utc
-
         try:
-            await asyncio.wait_for(eval_trigger.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            pass
-        eval_trigger.clear()
-
-        _drain_control_requests(settings, risk)
-
-        symbols = cached.active_symbols or {
-            s.strip() for s in settings.symbols.split(",") if s.strip()
-        }
-        now = time.monotonic()
-
-        for symbol in symbols:
-            last = last_eval_mono.get(symbol, 0.0)
-            if now - last < MIN_EVAL_INTERVAL_S:
-                _bump_counter(signal_counters, "throttled")
-                continue
-
-            window = tracker.get_window(symbol)
-            if window is None:
-                _bump_counter(signal_counters, "skip_no_window")
-                _record_reason(symbol, None, "skip_no_window")
-                continue
-
-            market = cached.get_market(symbol)
-            if market is None:
-                _bump_counter(signal_counters, "skip_no_market")
-                _record_reason(symbol, None, "skip_no_market")
-                continue
-            ticker = market.ticker
-
-            ob_cached = ws_feed.get_orderbook(ticker)
-            if ob_cached is None:
-                _bump_counter(signal_counters, "skip_no_orderbook")
-                _record_reason(
-                    symbol,
-                    ticker,
-                    "skip_no_orderbook",
-                    likely_block="no_orderbook",
-                    log=True,
-                )
-                continue
-            orderbook, ob_ts = ob_cached
-            age = (datetime.now(timezone.utc) - ob_ts).total_seconds()
-            if age > ORDERBOOK_STALENESS_S:
-                _bump_counter(signal_counters, "skip_stale_orderbook")
-                _record_reason(
-                    symbol,
-                    ticker,
-                    "skip_stale_orderbook",
-                    likely_block="stale_orderbook",
-                    log=True,
-                    age_s=age,
-                )
-                continue
-
-            if settings.strategy_name == "lwm":
-                signal = evaluate_lwm(
-                    window,
-                    ticker,
-                    orderbook,
-                    edge_threshold=settings.edge_threshold,
-                    decision_min_s=settings.lwm_decision_min_s,
-                    decision_max_s=settings.lwm_decision_max_s,
-                    min_price_change=settings.lwm_min_price_change,
-                    min_book_sum=settings.lwm_min_book_sum,
-                    max_book_sum=settings.lwm_max_book_sum,
-                    min_price=settings.lwm_min_price,
-                    max_price=settings.lwm_max_price,
-                    yes_only=settings.lwm_yes_only,
-                    no_side_edge_bonus=settings.lwm_no_side_edge_bonus,
-                    maker_first=settings.maker_first,
-                )
-            else:
-                signal = evaluate_momentum(
-                    window,
-                    ticker,
-                    orderbook,
-                    edge_threshold=settings.edge_threshold,
-                    k=settings.logistic_k,
-                    min_time=settings.momentum_min_time,
-                    max_time=settings.momentum_max_time,
-                    min_price=settings.min_trade_price,
-                    max_price=settings.max_trade_price,
-                    maker_first=settings.maker_first,
-                )
-            last_eval_mono[symbol] = now
-
-            if signal is None:
-                _bump_counter(signal_counters, "no_signal")
-                _record_reason(
-                    symbol,
-                    ticker,
-                    "no_signal",
-                    likely_block=_infer_no_signal_block(
-                        window=window,
-                        orderbook=orderbook,
-                        settings=settings,
-                    ),
-                )
-                continue
+            now_utc = datetime.now(timezone.utc)
+            if (now_utc - signal_counter_window_start[0]).total_seconds() >= 3600:
+                signal_counters.clear()
+                signal_counter_window_start[0] = now_utc
 
             try:
-                risk.check(signal, orderbook)
-            except RiskVetoError as exc:
-                executor.log_signal(signal, "skip_risk", str(exc))
-                _bump_counter(signal_counters, "skip_risk")
-                reason_str = str(exc)
-                if last_risk_block.get(ticker) != reason_str:
-                    logger.info("risk_blocked", ticker=ticker, reason=reason_str)
-                    last_risk_block[ticker] = reason_str
-                _record_reason(symbol, ticker, "skip_risk")
-                continue
+                await asyncio.wait_for(eval_trigger.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            eval_trigger.clear()
 
-            result = await executor.submit(signal, cached.balance)
-            if result is not None:
-                _bump_counter(signal_counters, "trade")
-                _record_reason(symbol, ticker, "trade")
-                last_risk_block.pop(ticker, None)
-                executor.log_signal(signal, "trade", f"order_id={result.order_id}")
-                if alerter is not None:
-                    await alerter.trade_placed(
-                        signal, result.contracts, result.order_id
+            _drain_control_requests(settings, risk)
+
+            symbols = cached.active_symbols or {
+                s.strip() for s in settings.symbols.split(",") if s.strip()
+            }
+            now = time.monotonic()
+
+            for symbol in symbols:
+                try:
+                    last = last_eval_mono.get(symbol, 0.0)
+                    if now - last < MIN_EVAL_INTERVAL_S:
+                        _bump_counter(signal_counters, "throttled")
+                        continue
+
+                    window = tracker.get_window(symbol)
+                    if window is None:
+                        _bump_counter(signal_counters, "skip_no_window")
+                        _record_reason(symbol, None, "skip_no_window")
+                        continue
+
+                    market = cached.get_market(symbol)
+                    if market is None:
+                        _bump_counter(signal_counters, "skip_no_market")
+                        _record_reason(symbol, None, "skip_no_market")
+                        continue
+                    ticker = market.ticker
+
+                    ob_cached = ws_feed.get_orderbook(ticker)
+                    if ob_cached is None:
+                        _bump_counter(signal_counters, "skip_no_orderbook")
+                        _record_reason(
+                            symbol,
+                            ticker,
+                            "skip_no_orderbook",
+                            likely_block="no_orderbook",
+                            log=True,
+                        )
+                        continue
+                    orderbook, ob_ts = ob_cached
+                    age = (datetime.now(timezone.utc) - ob_ts).total_seconds()
+                    if age > ORDERBOOK_STALENESS_S:
+                        _bump_counter(signal_counters, "skip_stale_orderbook")
+                        _record_reason(
+                            symbol,
+                            ticker,
+                            "skip_stale_orderbook",
+                            likely_block="stale_orderbook",
+                            log=True,
+                            age_s=age,
+                        )
+                        continue
+
+                    if settings.strategy_name == "lwm":
+                        signal = evaluate_lwm(
+                            window,
+                            ticker,
+                            orderbook,
+                            edge_threshold=settings.edge_threshold,
+                            decision_min_s=settings.lwm_decision_min_s,
+                            decision_max_s=settings.lwm_decision_max_s,
+                            min_price_change=settings.lwm_min_price_change,
+                            min_book_sum=settings.lwm_min_book_sum,
+                            max_book_sum=settings.lwm_max_book_sum,
+                            min_price=settings.lwm_min_price,
+                            max_price=settings.lwm_max_price,
+                            yes_only=settings.lwm_yes_only,
+                            no_side_edge_bonus=settings.lwm_no_side_edge_bonus,
+                            maker_first=settings.maker_first,
+                        )
+                    else:
+                        signal = evaluate_momentum(
+                            window,
+                            ticker,
+                            orderbook,
+                            edge_threshold=settings.edge_threshold,
+                            k=settings.logistic_k,
+                            min_time=settings.momentum_min_time,
+                            max_time=settings.momentum_max_time,
+                            min_price=settings.min_trade_price,
+                            max_price=settings.max_trade_price,
+                            maker_first=settings.maker_first,
+                        )
+                    last_eval_mono[symbol] = now
+
+                    if signal is None:
+                        _bump_counter(signal_counters, "no_signal")
+                        _record_reason(
+                            symbol,
+                            ticker,
+                            "no_signal",
+                            likely_block=_infer_no_signal_block(
+                                window=window,
+                                orderbook=orderbook,
+                                settings=settings,
+                            ),
+                        )
+                        continue
+
+                    try:
+                        risk.check(signal, orderbook)
+                    except RiskVetoError as exc:
+                        executor.log_signal(signal, "skip_risk", str(exc))
+                        _bump_counter(signal_counters, "skip_risk")
+                        reason_str = str(exc)
+                        if last_risk_block.get(ticker) != reason_str:
+                            logger.info(
+                                "risk_blocked", ticker=ticker, reason=reason_str
+                            )
+                            last_risk_block[ticker] = reason_str
+                        _record_reason(symbol, ticker, "skip_risk")
+                        continue
+
+                    result = await executor.submit(signal, cached.balance)
+                    if result is not None:
+                        _bump_counter(signal_counters, "trade")
+                        _record_reason(symbol, ticker, "trade")
+                        last_risk_block.pop(ticker, None)
+                        executor.log_signal(
+                            signal, "trade", f"order_id={result.order_id}"
+                        )
+                        if alerter is not None:
+                            await alerter.trade_placed(
+                                signal, result.contracts, result.order_id
+                            )
+                    elif executor._dry_run:
+                        _bump_counter(signal_counters, "paper_trade")
+                        _record_reason(symbol, ticker, "paper_trade")
+                        executor.log_signal(signal, "paper_trade", "")
+                    else:
+                        _bump_counter(signal_counters, "skip_sizing")
+                        _record_reason(symbol, ticker, "skip_sizing")
+                        executor.log_signal(
+                            signal, "skip_sizing", "sizing returned 0 contracts"
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Never let one symbol's failure kill the eval loop. Log
+                    # with traceback and move on. The 2026-04-18/-04-20 wedges
+                    # both presented as this loop silently dying with no log
+                    # line — the bare `except Exception` is what stops that.
+                    logger.exception(
+                        "fast_eval_iter_error",
+                        extra={"symbol": symbol},
                     )
-            elif executor._dry_run:
-                _bump_counter(signal_counters, "paper_trade")
-                _record_reason(symbol, ticker, "paper_trade")
-                executor.log_signal(signal, "paper_trade", "")
-            else:
-                _bump_counter(signal_counters, "skip_sizing")
-                _record_reason(symbol, ticker, "skip_sizing")
-                executor.log_signal(
-                    signal, "skip_sizing", "sizing returned 0 contracts"
-                )
+                    continue
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("fast_eval_loop_error")
+            # Avoid hot-looping if something pathological is raising every
+            # iteration (e.g. cached-state corruption).
+            await asyncio.sleep(1.0)
 
 
 async def _slow_housekeeping_loop(
@@ -921,6 +954,33 @@ async def _slow_housekeeping_loop(
                 signals_h = (
                     sum(signal_counters.values()) if signal_counters is not None else 0
                 )
+
+                eval_stale: list[dict[str, Any]] = []
+                eval_max_stale_age_s = 0.0
+                if last_eval_reason is not None:
+                    now_iso = datetime.now(timezone.utc)
+                    for symbol, rec in last_eval_reason.items():
+                        at_raw = rec.get("at")
+                        if not isinstance(at_raw, str):
+                            continue
+                        try:
+                            age_s = (now_iso - datetime.fromisoformat(at_raw)).total_seconds()
+                        except ValueError:
+                            continue
+                        if age_s > EVAL_STALE_THRESHOLD_S:
+                            eval_stale.append(
+                                {"symbol": symbol, "age_s": round(age_s, 1)}
+                            )
+                            eval_max_stale_age_s = max(eval_max_stale_age_s, age_s)
+
+                eval_stale_count = len(eval_stale)
+                eval_max_stale_age_s = round(eval_max_stale_age_s, 1)
+                if eval_stale:
+                    logger.warning("eval_loop_stalled", stale=eval_stale)
+
+                live_state["health"]["eval_stale_symbols"] = eval_stale_count
+                live_state["health"]["eval_max_stale_age_s"] = eval_max_stale_age_s
+
                 logger.info(
                     "HEALTH",
                     mode=settings.trading_mode,
@@ -938,6 +998,8 @@ async def _slow_housekeeping_loop(
                         coinbase_age is not None and coinbase_age > 30.0
                     ),
                     kalshi_ws_stale=bool(kalshi_age is not None and kalshi_age > 30.0),
+                    eval_stale_symbols=eval_stale_count,
+                    eval_max_stale_age_s=eval_max_stale_age_s,
                 )
 
             await _emit_feed_health_alerts(
@@ -1219,6 +1281,8 @@ async def _slow_housekeeping_loop(
                             closed_window.close_time.isoformat(),
                         )
 
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("housekeeping_cycle_error")
 
