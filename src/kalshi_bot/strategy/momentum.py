@@ -1,4 +1,4 @@
-"""Momentum + orderbook imbalance strategy."""
+"""Momentum + orderbook imbalance strategy with per-asset tuning."""
 
 from __future__ import annotations
 
@@ -8,6 +8,11 @@ from decimal import Decimal
 
 from kalshi_bot.data.window_tracker import WindowState
 from kalshi_bot.models.market import OrderBook
+from kalshi_bot.strategy.asset_config import (
+    compute_signal_strength,
+    maker_timeout_for_strength,
+    resolve_param,
+)
 from kalshi_bot.strategy.fees import maker_fee, taker_fee
 from kalshi_bot.strategy.probability import estimate_up_probability
 from kalshi_bot.strategy.signals import Side, Signal, StrategyName
@@ -33,18 +38,32 @@ def evaluate_momentum(
     ticker: str,
     orderbook: OrderBook,
     *,
-    edge_threshold: float = 0.06,
+    edge_threshold: float | None = None,
     k: float = 150.0,
-    min_time: int = 30,
-    max_time: int = 480,
-    min_price: float = 0.35,
-    max_price: float = 0.80,
+    min_time: int | None = None,
+    max_time: int | None = None,
+    min_price: float | None = None,
+    max_price: float | None = None,
     maker_first: bool = True,
     contracts: int = 1,
 ) -> Signal | None:
-    """Evaluate momentum + OBI gates and return a trade signal if valid."""
+    """Evaluate momentum + OBI gates and return a trade signal if valid.
+
+    Per-asset overrides are resolved from ``DEFAULT_ASSET_CONFIGS`` so
+    ETH, BTC and SOL each get tuned parameters without cluttering the
+    caller in ``main.py``.
+    """
+    symbol = window.symbol
+
+    # Resolve per-asset overrides (only when caller didn't specify)
+    eff_edge_threshold = edge_threshold if edge_threshold is not None else resolve_param(symbol, 0.06, "edge_threshold")
+    eff_min_time = min_time if min_time is not None else resolve_param(symbol, 30, "momentum_min_time")
+    eff_max_time = max_time if max_time is not None else resolve_param(symbol, 480, "momentum_max_time")
+    eff_min_price = min_price if min_price is not None else resolve_param(symbol, 0.35, "min_trade_price")
+    eff_max_price = max_price if max_price is not None else resolve_param(symbol, 0.80, "max_trade_price")
+
     seconds_remaining = window.seconds_remaining
-    if not (min_time <= seconds_remaining <= max_time):
+    if not (eff_min_time <= seconds_remaining <= eff_max_time):
         return None
 
     momentum = window.momentum_60s
@@ -89,16 +108,38 @@ def evaluate_momentum(
 
     contracts = max(1, contracts)
 
-    if maker_first and _price_in_bounds(maker_price, min_price, max_price):
+    # Compute signal strength for adaptive execution
+    raw_net_edge = 0.0
+    if maker_first and _price_in_bounds(maker_price, eff_min_price, eff_max_price):
+        maker_fee_total = maker_fee(contracts, float(maker_price))
+        raw_net_edge = est_prob - float(maker_price) - float(maker_fee_total / contracts)
+
+    if raw_net_edge < eff_edge_threshold and _price_in_bounds(
+        taker_price, eff_min_price, eff_max_price
+    ):
+        taker_fee_total = taker_fee(contracts, float(taker_price))
+        raw_net_edge = est_prob - float(taker_price) - float(taker_fee_total / contracts)
+
+    strength = compute_signal_strength(
+        net_edge=raw_net_edge,
+        obi=imbalance,
+        seconds_remaining=seconds_remaining,
+        total_depth=orderbook.total_depth,
+    )
+
+    if maker_first and _price_in_bounds(maker_price, eff_min_price, eff_max_price):
         maker_fee_total = maker_fee(contracts, float(maker_price))
         maker_net_edge = est_prob - float(maker_price) - float(maker_fee_total / contracts)
-        if maker_net_edge >= edge_threshold:
+        if maker_net_edge >= eff_edge_threshold:
             maker_edge = est_prob - float(maker_price)
+            maker_timeout = maker_timeout_for_strength(
+                strength, symbol, global_horizon=90
+            )
             return Signal(
                 timestamp=datetime.now(timezone.utc),
                 strategy=StrategyName.MOMENTUM,
                 ticker=ticker,
-                symbol=window.symbol,
+                symbol=symbol,
                 side=side,
                 edge=Decimal(str(maker_edge)),
                 net_edge=Decimal(str(maker_net_edge)),
@@ -108,19 +149,20 @@ def evaluate_momentum(
                 contracts=contracts,
                 route="maker",
                 taker_price=taker_price,
-                reason="momentum+obi maker",
+                reason=f"momentum+obi maker strength={strength.value} timeout={maker_timeout}s",
+                signal_strength=strength,
             )
 
-    if _price_in_bounds(taker_price, min_price, max_price):
+    if _price_in_bounds(taker_price, eff_min_price, eff_max_price):
         taker_fee_total = taker_fee(contracts, float(taker_price))
         taker_net_edge = est_prob - float(taker_price) - float(taker_fee_total / contracts)
-        if taker_net_edge >= edge_threshold:
+        if taker_net_edge >= eff_edge_threshold:
             taker_edge = est_prob - float(taker_price)
             return Signal(
                 timestamp=datetime.now(timezone.utc),
                 strategy=StrategyName.MOMENTUM,
                 ticker=ticker,
-                symbol=window.symbol,
+                symbol=symbol,
                 side=side,
                 edge=Decimal(str(taker_edge)),
                 net_edge=Decimal(str(taker_net_edge)),
@@ -130,7 +172,8 @@ def evaluate_momentum(
                 contracts=contracts,
                 route="taker",
                 taker_price=taker_price,
-                reason="momentum+obi taker",
+                reason=f"momentum+obi taker strength={strength.value}",
+                signal_strength=strength,
             )
 
     return None

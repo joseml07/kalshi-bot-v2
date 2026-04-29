@@ -1,29 +1,4 @@
-"""Late-Window Momentum (LWM) strategy.
-
-Trades the *direction of intra-window price drift* (`price_change_pct`)
-near close, with a probability lookup calibrated against 5 days of
-recorded snapshots. See `LWM_FINDINGS.md` in the backtester repo.
-
-Test-set comparison vs the baseline momentum + OBI runner:
-    baseline: 55 trades, 60% WR, +$131 net, Sharpe 3.73, DD -$16.50
-    LWM:      30 trades, 80% WR,  +$90 net, Sharpe 3.70, DD  -$8.57
-
-Defaults:
-- yes_only=True because the recorded period was bull-biased (65% up).
-  NO-side trading can be re-enabled when calibration is refit on a
-  more balanced window.
-- decision_window=(30, 540)s — wide enough to catch most viable setups
-  while excluding the noisy first minute of the window.
-- min_price_change=0.0003 — filters out the noise band where
-  `price_change_pct` sign is essentially random.
-- Book gates `[0.90, 1.50]` — the floor catches genuinely stale or
-  one-sided books; the ceiling is loose because implied-crossed
-  states (`yes_bid + no_bid > 1`) are normal Kalshi microstructure
-  near close and represent real, executable trades. An earlier,
-  tighter ceiling (1.005) was calibrated on a historical snapshot
-  where crossed books were ~0.1% of rows, but live they are the
-  dominant state — tightening the gate starved the strategy.
-"""
+"""Late-Window Momentum (LWM) strategy with per-asset tuning."""
 
 from __future__ import annotations
 
@@ -34,6 +9,11 @@ from decimal import Decimal
 
 from kalshi_bot.data.window_tracker import WindowState
 from kalshi_bot.models.market import OrderBook
+from kalshi_bot.strategy.asset_config import (
+    compute_signal_strength,
+    maker_timeout_for_strength,
+    resolve_param,
+)
 from kalshi_bot.strategy.fees import maker_fee, taker_fee
 from kalshi_bot.strategy.signals import Side, Signal, StrategyName
 
@@ -99,25 +79,39 @@ def evaluate_lwm(
     ticker: str,
     orderbook: OrderBook,
     *,
-    edge_threshold: float = 0.06,
+    edge_threshold: float | None = None,
     decision_min_s: int = 30,
     decision_max_s: int = 540,
-    min_price_change: float = 0.0003,
+    min_price_change: float | None = None,
     min_book_sum: float = 0.90,
     max_book_sum: float = 1.50,
-    min_price: float = 0.05,
-    max_price: float = 0.95,
-    yes_only: bool = True,
-    no_side_edge_bonus: float = 0.04,
+    min_price: float | None = None,
+    max_price: float | None = None,
+    yes_only: bool | None = None,
+    no_side_edge_bonus: float | None = None,
     maker_first: bool = True,
     contracts: int = 1,
 ) -> Signal | None:
+    """Evaluate LWM gates and return a trade signal if valid.
+
+    Per-asset overrides are resolved from ``DEFAULT_ASSET_CONFIGS``.
+    """
+    symbol = window.symbol
+
+    # Resolve per-asset overrides (only when caller didn't specify)
+    eff_edge_threshold = edge_threshold if edge_threshold is not None else resolve_param(symbol, 0.06, "edge_threshold")
+    eff_min_price_change = min_price_change if min_price_change is not None else resolve_param(symbol, 0.0003, "lwm_min_price_change")
+    eff_yes_only = yes_only if yes_only is not None else resolve_param(symbol, True, "lwm_yes_only")
+    eff_no_side_bonus = no_side_edge_bonus if no_side_edge_bonus is not None else resolve_param(symbol, 0.04, "lwm_no_side_edge_bonus")
+    eff_min_price = min_price if min_price is not None else resolve_param(symbol, 0.05, "min_trade_price")
+    eff_max_price = max_price if max_price is not None else resolve_param(symbol, 0.95, "max_trade_price")
+
     seconds_remaining = window.seconds_remaining
     if not (decision_min_s <= seconds_remaining <= decision_max_s):
         return None
 
     pc = window.price_change_pct
-    if abs(pc) < min_price_change:
+    if abs(pc) < eff_min_price_change:
         return None
 
     yes_bid = orderbook.best_yes_bid
@@ -133,35 +127,55 @@ def evaluate_lwm(
         return None
 
     side = Side.YES if pc > 0 else Side.NO
-    if side is Side.NO and yes_only:
+    if side is Side.NO and eff_yes_only:
         return None
 
     if side is Side.YES:
         maker_price = orderbook.best_yes_bid
         taker_price = orderbook.best_yes_ask
         est_prob = estimate_p_up(pc, seconds_remaining)
-        side_edge_thr = edge_threshold
+        side_edge_thr = eff_edge_threshold
     else:
         maker_price = orderbook.best_no_bid
         taker_price = orderbook.best_no_ask
         est_prob = 1.0 - estimate_p_up(pc, seconds_remaining)
-        side_edge_thr = edge_threshold + no_side_edge_bonus
+        side_edge_thr = eff_edge_threshold + eff_no_side_bonus
 
     if maker_price is None or taker_price is None:
         return None
 
     contracts = max(1, contracts)
 
-    if maker_first and min_price <= float(maker_price) <= max_price:
+    # Compute signal strength for adaptive execution
+    raw_net_edge = 0.0
+    if maker_first and eff_min_price <= float(maker_price) <= eff_max_price:
+        fee_total = maker_fee(contracts, float(maker_price))
+        raw_net_edge = est_prob - float(maker_price) - float(fee_total / contracts)
+
+    if raw_net_edge < side_edge_thr and eff_min_price <= float(taker_price) <= eff_max_price:
+        fee_total = taker_fee(contracts, float(taker_price))
+        raw_net_edge = est_prob - float(taker_price) - float(fee_total / contracts)
+
+    strength = compute_signal_strength(
+        net_edge=raw_net_edge,
+        obi=orderbook.orderbook_imbalance,
+        seconds_remaining=seconds_remaining,
+        total_depth=orderbook.total_depth,
+    )
+
+    if maker_first and eff_min_price <= float(maker_price) <= eff_max_price:
         fee_total = maker_fee(contracts, float(maker_price))
         net_edge = est_prob - float(maker_price) - float(fee_total / contracts)
         if net_edge >= side_edge_thr:
             edge = est_prob - float(maker_price)
+            maker_timeout = maker_timeout_for_strength(
+                strength, symbol, global_horizon=90
+            )
             return Signal(
                 timestamp=datetime.now(timezone.utc),
                 strategy=StrategyName.LWM,
                 ticker=ticker,
-                symbol=window.symbol,
+                symbol=symbol,
                 side=side,
                 edge=Decimal(str(edge)),
                 net_edge=Decimal(str(net_edge)),
@@ -171,10 +185,11 @@ def evaluate_lwm(
                 contracts=contracts,
                 route="maker",
                 taker_price=taker_price,
-                reason=f"lwm maker pc={pc:.5f} secs={seconds_remaining}",
+                reason=f"lwm maker pc={pc:.5f} secs={seconds_remaining} strength={strength.value} timeout={maker_timeout}s",
+                signal_strength=strength,
             )
 
-    if min_price <= float(taker_price) <= max_price:
+    if eff_min_price <= float(taker_price) <= eff_max_price:
         fee_total = taker_fee(contracts, float(taker_price))
         net_edge = est_prob - float(taker_price) - float(fee_total / contracts)
         if net_edge >= side_edge_thr:
@@ -183,7 +198,7 @@ def evaluate_lwm(
                 timestamp=datetime.now(timezone.utc),
                 strategy=StrategyName.LWM,
                 ticker=ticker,
-                symbol=window.symbol,
+                symbol=symbol,
                 side=side,
                 edge=Decimal(str(edge)),
                 net_edge=Decimal(str(net_edge)),
@@ -193,7 +208,8 @@ def evaluate_lwm(
                 contracts=contracts,
                 route="taker",
                 taker_price=taker_price,
-                reason=f"lwm taker pc={pc:.5f} secs={seconds_remaining}",
+                reason=f"lwm taker pc={pc:.5f} secs={seconds_remaining} strength={strength.value}",
+                signal_strength=strength,
             )
 
     return None

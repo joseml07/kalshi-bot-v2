@@ -9,6 +9,9 @@ from enum import Enum
 from pydantic import BaseModel
 
 
+from kalshi_bot.strategy.asset_config import SignalStrength
+
+
 class Side(str, Enum):
     """Order side."""
 
@@ -43,3 +46,4 @@ class Signal(BaseModel):
     route: str = "taker"
     taker_price: Decimal | None = None
     reason: str = ""
+    signal_strength: SignalStrength = SignalStrength.MODERATE

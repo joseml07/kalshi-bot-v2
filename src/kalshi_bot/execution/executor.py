@@ -17,6 +17,7 @@ from kalshi_bot.models.market import OrderBook
 from kalshi_bot.risk.manager import RiskManager
 from kalshi_bot.risk.sizing import DEFAULT_KELLY_FRACTION, kelly_size
 from kalshi_bot.strategy.fees import maker_fee, taker_fee
+from kalshi_bot.strategy.asset_config import maker_timeout_for_strength
 from kalshi_bot.strategy.signals import Signal
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,9 @@ class TrackedOrder:
         )
         self.route: str = signal.route if hasattr(signal, "route") else "taker"
         self.taker_price: Decimal | None = getattr(signal, "taker_price", None)
-        self.maker_timeout: int = 90
+        self.maker_timeout: int = maker_timeout_for_strength(
+            signal.signal_strength, signal.symbol, global_horizon=90
+        )
 
     @property
     def fee_per_contract(self) -> float:
@@ -129,7 +132,10 @@ class Executor:
             if self._settings is not None
             else DEFAULT_KELLY_FRACTION
         )
-        contracts = kelly_size(win_prob, price, bankroll, fraction=fraction)
+        contracts = kelly_size(
+            win_prob, price, bankroll, fraction=fraction,
+            signal_strength=signal.signal_strength, symbol=signal.symbol,
+        )
         if contracts == 0:
             logger.debug("Sizing returned 0 contracts for %s — skipping", signal.ticker)
             return None
@@ -573,6 +579,32 @@ class Executor:
             for o in self._orders.values()
             if o.state in (OrderState.PENDING, OrderState.FILLED)
         }
+
+    @property
+    def cancel_rate(self) -> float:
+        """Cancel rate over the last hour (cancels / total orders placed)."""
+        total = self._total_orders_last_hour
+        if total == 0:
+            return 0.0
+        return self._cancels_last_hour / total
+
+    @property
+    def _total_orders_last_hour(self) -> int:
+        """Count orders placed in the last hour."""
+        cutoff = time.monotonic() - 3600
+        return sum(
+            1 for o in self._orders.values()
+            if o.placed_at > cutoff
+        )
+
+    @property
+    def _cancels_last_hour(self) -> int:
+        """Count cancelled orders in the last hour."""
+        cutoff = time.monotonic() - 3600
+        return sum(
+            1 for o in self._orders.values()
+            if o.state == OrderState.CANCELLED and o.placed_at > cutoff
+        )
 
     def log_signal(self, signal: Signal, action: str, reason: str = "") -> None:
         """Log a signal evaluation to the signals table."""

@@ -1,15 +1,24 @@
-"""Fractional-Kelly position sizing."""
+"""Fractional-Kelly position sizing with signal-strength scaling."""
 
 from __future__ import annotations
 
 import math
 from decimal import Decimal
 
+from kalshi_bot.strategy.asset_config import SignalStrength, get_asset_config
+
 MIN_CONTRACTS = 1
 MAX_CONTRACTS = 10
 MAX_COST_DOLLARS = Decimal("25.00")
 
 DEFAULT_KELLY_FRACTION = 0.25
+
+# Signal-strength multipliers for position sizing
+STRENGTH_MULTIPLIERS: dict[SignalStrength, float] = {
+    SignalStrength.WEAK: 0.6,
+    SignalStrength.MODERATE: 1.0,
+    SignalStrength.STRONG: 1.5,
+}
 
 
 def kelly_fraction(win_prob: float, price: float) -> float:
@@ -31,6 +40,8 @@ def kelly_size(
     price: float,
     bankroll: Decimal,
     fraction: float = DEFAULT_KELLY_FRACTION,
+    signal_strength: SignalStrength = SignalStrength.MODERATE,
+    symbol: str = "",
 ) -> int:
     """Compute position size using fractional-Kelly criterion.
 
@@ -39,6 +50,8 @@ def kelly_size(
         price: Contract price in dollars (0 < price < 1).
         bankroll: Current available bankroll in dollars.
         fraction: Kelly fraction to apply (e.g. 0.25 = quarter-Kelly).
+        signal_strength: Strength classification for adaptive sizing.
+        symbol: Crypto symbol for per-asset sizing multiplier.
 
     Returns:
         Number of contracts to buy (between MIN_CONTRACTS and MAX_CONTRACTS),
@@ -50,7 +63,16 @@ def kelly_size(
     if f <= 0:
         return 0
 
-    scaled_f = f * fraction
+    # Apply signal-strength multiplier
+    strength_mult = STRENGTH_MULTIPLIERS.get(signal_strength, 1.0)
+
+    # Apply per-asset sizing multiplier
+    asset_mult = 1.0
+    cfg = get_asset_config(symbol)
+    if cfg is not None:
+        asset_mult = cfg.sizing_multiplier
+
+    scaled_f = f * fraction * strength_mult * asset_mult
     dollar_amount = float(bankroll) * scaled_f
 
     if price <= 0:
