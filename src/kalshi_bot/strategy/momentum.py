@@ -10,6 +10,7 @@ from kalshi_bot.data.window_tracker import WindowState
 from kalshi_bot.models.market import OrderBook
 from kalshi_bot.strategy.asset_config import (
     compute_signal_strength,
+    get_asset_config,
     maker_timeout_for_strength,
     resolve_param,
 )
@@ -83,6 +84,16 @@ def evaluate_momentum(
             mom_sign,
             imb_sign,
             seconds_remaining,
+        )
+        return None
+
+    # Minimum depth gate — thin books have unreliable pricing
+    cfg = get_asset_config(symbol)
+    min_depth = cfg.min_total_depth if cfg is not None else 50
+    if orderbook.total_depth < min_depth:
+        logger.debug(
+            "momentum_depth_gate ticker=%s depth=%d min=%d",
+            ticker, orderbook.total_depth, min_depth,
         )
         return None
 

@@ -35,6 +35,7 @@ class AssetConfig:
     lwm_yes_only: bool | None = None
     lwm_no_side_edge_bonus: float | None = None
     sizing_multiplier: float = 1.0
+    min_total_depth: int = 50
 
 
 # Tuned configs derived from live CSV analysis (Apr 7–29 2026).
