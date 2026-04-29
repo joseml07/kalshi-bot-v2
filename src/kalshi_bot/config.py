@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     # Maker-first execution
     maker_first: bool = Field(default=True)
     maker_fill_horizon_s: int = Field(default=90)
+    taker_fill_horizon_s: int = Field(default=120)
 
     # Exit management
     exit_stop_loss: float = Field(default=0.10)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import sqlite3
@@ -32,6 +33,12 @@ DB_PATH = "trades.db"
 PROMOTE_MIN_NET_EDGE = 0.02
 PROMOTE_FRESH_ORDERBOOK_MAX_AGE_S = 5.0
 PROMOTE_BIG_PRICE_MOVE = 0.03
+
+# Taker execution improvements
+TAKER_SLIPPAGE_BUFFER = Decimal("0.02")  # pay up to 2c worse to guarantee fill
+MIN_PROMOTE_DEPTH = 15                   # contracts visible before taker promo
+TAKER_FILL_HORIZON_S = 120               # longer timeout for taker orders
+MAX_PROMOTE_RETRIES = 1
 
 
 class OrderState(str, Enum):
@@ -251,7 +258,12 @@ class Executor:
     async def promote_to_taker(self) -> list[TrackedOrder]:
         """Cancel maker orders past their fill horizon and re-place as taker.
 
-        Returns orders whose taker promotion failed (so callers can alert).
+        New defensive logic:
+        - Depth gate: skip if < MIN_PROMOTE_DEPTH contracts visible
+        - Size reduction: downsize to min(contracts, depth//2) on thin books
+        - Slippage buffer: pay +2c to cross spread aggressively
+        - Retry: one immediate retry if first taker placement fails
+        - Longer timeout: taker orders get TAKER_FILL_HORIZON_S (120s)
         """
         now = time.monotonic()
         to_promote: list[str] = []
@@ -353,43 +365,108 @@ class Executor:
                 self._update_trade_pnl(oid, Decimal("0"))
                 continue
 
-            try:
-                taker_resp = await self._client.place_order(
-                    ticker=order.signal.ticker,
-                    action="buy",
-                    side=order.signal.side.value,
-                    price_dollars=fresh_taker_price,
-                    count=order.contracts,
-                )
-                new_oid = str(taker_resp["order_id"])
-                new_order = TrackedOrder(
-                    signal=order.signal,
-                    order_id=new_oid,
-                    contracts=order.contracts,
-                    price=fresh_taker_price,
-                )
-                new_order.route = "taker_promoted"
-                self._orders[new_oid] = new_order
-                self._log_trade(
-                    order.signal,
-                    new_oid,
-                    order.contracts,
-                    fresh_taker_price,
-                    None,
-                )
+            # --- NEW: depth gate + size reduction ---
+            available_depth = self._get_available_depth(order)
+            if available_depth is not None and available_depth < MIN_PROMOTE_DEPTH:
                 logger.info(
-                    "Promoted to taker: %s -> %s @ %s (fresh, stale was %s, edge=%.4f)",
-                    oid,
-                    new_oid,
-                    fresh_taker_price,
-                    stale_taker_price,
-                    fresh_net_edge,
+                    "skip_taker_promote_thin_book",
+                    extra={
+                        "order_id": oid,
+                        "ticker": order.signal.ticker,
+                        "side": order.signal.side.value,
+                        "wanted": order.contracts,
+                        "available": available_depth,
+                        "min_required": MIN_PROMOTE_DEPTH,
+                    },
                 )
-            except Exception:
-                logger.exception("Taker promotion failed for %s", oid)
                 self._risk.record_settlement(order.signal.ticker, Decimal("0"))
-                failed.append(order)
+                self._update_trade_pnl(oid, Decimal("0"))
+                continue
+
+            # Reduce size if book is thinner than desired
+            target_contracts = order.contracts
+            if available_depth is not None:
+                target_contracts = min(order.contracts, max(1, available_depth // 2))
+                if target_contracts < order.contracts:
+                    logger.info(
+                        "taker_promote_size_reduction",
+                        extra={
+                            "order_id": oid,
+                            "ticker": order.signal.ticker,
+                            "original": order.contracts,
+                            "reduced_to": target_contracts,
+                            "available_depth": available_depth,
+                        },
+                    )
+
+            # --- Place taker order (with retry) ---
+            for attempt in range(MAX_PROMOTE_RETRIES + 1):
+                try:
+                    taker_resp = await self._client.place_order(
+                        ticker=order.signal.ticker,
+                        action="buy",
+                        side=order.signal.side.value,
+                        price_dollars=fresh_taker_price,
+                        count=target_contracts,
+                    )
+                    new_oid = str(taker_resp["order_id"])
+                    new_order = TrackedOrder(
+                        signal=order.signal,
+                        order_id=new_oid,
+                        contracts=target_contracts,
+                        price=fresh_taker_price,
+                    )
+                    new_order.route = "taker_promoted"
+                    # Give taker orders more time to fill (configurable)
+                    new_order.timeout = (
+                        self._settings.taker_fill_horizon_s
+                        if self._settings is not None
+                        else TAKER_FILL_HORIZON_S
+                    )
+                    self._orders[new_oid] = new_order
+                    self._log_trade(
+                        order.signal,
+                        new_oid,
+                        target_contracts,
+                        fresh_taker_price,
+                        None,
+                    )
+                    logger.info(
+                        "Promoted to taker: %s -> %s @ %s x%d (fresh, stale was %s, edge=%.4f)",
+                        oid,
+                        new_oid,
+                        fresh_taker_price,
+                        target_contracts,
+                        stale_taker_price,
+                        fresh_net_edge,
+                    )
+                    break  # success
+                except Exception:
+                    if attempt < MAX_PROMOTE_RETRIES:
+                        logger.warning(
+                            "Taker promotion attempt %d failed for %s, retrying...",
+                            attempt + 1,
+                            oid,
+                        )
+                        await asyncio.sleep(0.5)
+                        continue
+                    logger.exception("Taker promotion failed for %s", oid)
+                    self._risk.record_settlement(order.signal.ticker, Decimal("0"))
+                    failed.append(order)
         return failed
+
+    def _get_available_depth(self, order: TrackedOrder) -> int | None:
+        """Return available contracts on the desired side of the orderbook."""
+        if self._get_orderbook is None:
+            return None
+        snapshot = self._get_orderbook(order.signal.ticker)
+        if snapshot is None:
+            return None
+        fresh_book, _ = snapshot
+        if order.signal.side.value == "yes":
+            return sum(lv.quantity for lv in fresh_book.yes_levels)
+        else:
+            return sum(lv.quantity for lv in fresh_book.no_levels)
 
     def _fresh_taker_price(self, order: TrackedOrder) -> Decimal | None:
         """Compute the current taker price from the cached orderbook.
@@ -397,6 +474,9 @@ class Executor:
         Returns None when no orderbook source is wired, no snapshot is
         cached, the snapshot is older than PROMOTE_FRESH_ORDERBOOK_MAX_AGE_S,
         or the relevant side lacks liquidity.
+
+        Applies TAKER_SLIPPAGE_BUFFER (2c) to aggressively cross the spread
+        and guarantee a fill on thin Kalshi books.
         """
         if self._get_orderbook is None:
             return None
@@ -413,7 +493,8 @@ class Executor:
             ask = fresh_book.best_no_ask
         if ask is None:
             return None
-        return ask
+        # Pay up to 2c worse than best ask to guarantee fill
+        return min(Decimal("0.99"), ask + TAKER_SLIPPAGE_BUFFER)
 
     async def cancel_stale(self) -> list[TrackedOrder]:
         """Cancel orders that have been pending longer than ORDER_TIMEOUT_SECONDS.

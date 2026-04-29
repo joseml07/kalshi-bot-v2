@@ -202,10 +202,12 @@ async def test_promote_to_taker_uses_fresh_price(tmp_path: Path) -> None:
     await executor.promote_to_taker()
 
     assert len(client.calls) == 2
-    assert Decimal(str(client.calls[-1]["price_dollars"])) == fresh_price
+    # _fresh_taker_price now adds 2c slippage buffer
+    expected_price = fresh_price + Decimal("0.02")
+    assert Decimal(str(client.calls[-1]["price_dollars"])) == expected_price
     promoted_orders = [o for o in executor.pending_orders if o.route == "taker_promoted"]
     assert len(promoted_orders) == 1
-    assert promoted_orders[0].price == fresh_price
+    assert promoted_orders[0].price == expected_price
     await executor.close()
 
 
