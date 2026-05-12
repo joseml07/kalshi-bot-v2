@@ -68,7 +68,7 @@ DEFAULT_ASSET_CONFIGS: dict[str, AssetConfig] = {
         momentum_min_time=30,
         momentum_max_time=480,
         lwm_min_price_change=0.0003,
-        lwm_yes_only=True,
+        lwm_yes_only=False,
         lwm_no_side_edge_bonus=0.04,
         sizing_multiplier=1.0,
     ),
@@ -136,7 +136,8 @@ def compute_signal_strength(
     - WEAK: < 40
     """
     edge_score = min(net_edge / 0.10, 1.0) * 40
-    obi_score = min(abs(obi) / 500.0, 1.0) * 25
+    # OBI is now normalized to [-1, 1], so |obi| itself is the saturation fraction.
+    obi_score = min(abs(obi), 1.0) * 25
     time_score = min(seconds_remaining / 300.0, 1.0) * 20
     depth_score = min(total_depth / 1000.0, 1.0) * 15
 

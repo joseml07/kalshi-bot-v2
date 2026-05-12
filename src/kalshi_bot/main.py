@@ -793,10 +793,6 @@ async def _fast_eval_loop(
                             await alerter.trade_placed(
                                 signal, result.contracts, result.order_id
                             )
-                    elif executor._dry_run:
-                        _bump_counter(signal_counters, "paper_trade")
-                        _record_reason(symbol, ticker, "paper_trade")
-                        executor.log_signal(signal, "paper_trade", "")
                     else:
                         _bump_counter(signal_counters, "skip_sizing")
                         _record_reason(symbol, ticker, "skip_sizing")

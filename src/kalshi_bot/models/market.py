@@ -73,10 +73,16 @@ class OrderBook(BaseModel):
 
     @property
     def orderbook_imbalance(self) -> float:
-        """Raw OBI: yes_depth - no_depth. Positive = bullish."""
+        """Normalized OBI: (yes_depth - no_depth) / total_depth. Range [-1, 1].
+
+        Positive = more resting YES volume (bullish). Zero = balanced.
+        """
         yes_vol = sum(lv.quantity for lv in self.yes_levels)
         no_vol = sum(lv.quantity for lv in self.no_levels)
-        return float(yes_vol - no_vol)
+        total = yes_vol + no_vol
+        if total == 0:
+            return 0.0
+        return float(yes_vol - no_vol) / total
 
     @property
     def total_depth(self) -> int:

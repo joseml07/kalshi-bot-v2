@@ -120,12 +120,18 @@ def api_summary(all: bool = False) -> dict[str, Any]:  # noqa: A002
     # pnl='0' with fees=NULL for orders that timed out without filling;
     # those are NOT positions, so we exclude them by requiring BOTH pnl
     # and fees to be NULL (the state between _log_trade and settle/exit).
+    open_where = "WHERE pnl IS NULL AND fees IS NULL"
+    open_params: tuple[Any, ...] = ()
+    if ss:
+        open_where = "WHERE pnl IS NULL AND fees IS NULL AND timestamp >= ?"
+        open_params = (ss,)
     open_rows = _query(
-        """SELECT ticker, side, SUM(contracts) as qty,
+        f"""SELECT ticker, side, SUM(contracts) as qty,
                   SUM(CAST(price AS REAL) * contracts) as cost
            FROM trades
-           WHERE pnl IS NULL AND fees IS NULL
-           GROUP BY ticker, side"""
+           {open_where}
+           GROUP BY ticker, side""",
+        open_params,
     )
     summary["open_positions"] = open_rows
     summary["total_in_positions"] = sum(r["cost"] for r in open_rows)

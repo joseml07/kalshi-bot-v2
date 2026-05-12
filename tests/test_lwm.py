@@ -95,7 +95,7 @@ def test_skips_one_sided_book() -> None:
 def test_yes_only_blocks_no_signal_by_default() -> None:
     w = _make_window(-0.005, 120)
     ob = _book(yes_bid="0.40", no_bid="0.55")
-    assert evaluate_lwm(w, w.ticker, ob) is None
+    assert evaluate_lwm(w, w.ticker, ob, yes_only=True) is None
 
 
 def test_no_signal_emitted_when_yes_only_disabled() -> None:

@@ -582,7 +582,10 @@ class Executor:
         sell_price = current_market_price if current_market_price > 0 else Decimal("0")
         pnl_per_contract = sell_price - order.price
         raw_pnl = pnl_per_contract * order.contracts
-        entry_fee = taker_fee(order.contracts, float(order.price))
+        if order.route == "maker":
+            entry_fee = maker_fee(order.contracts, float(order.price))
+        else:
+            entry_fee = taker_fee(order.contracts, float(order.price))
         exit_fee = taker_fee(order.contracts, float(sell_price))
         total_fees = entry_fee + exit_fee
         exit_pnl = raw_pnl - total_fees
