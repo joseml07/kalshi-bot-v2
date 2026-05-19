@@ -574,6 +574,7 @@ class Executor:
         self,
         order: TrackedOrder,
         current_market_price: Decimal = Decimal("0"),
+        exit_reason: str | None = None,
     ) -> bool:
         """Sell to exit a filled position."""
         if order.state != OrderState.FILLED:
@@ -605,7 +606,7 @@ class Executor:
             order.pnl = exit_pnl
             order.state = OrderState.CANCELLED
             self._risk.record_settlement(order.signal.ticker, exit_pnl)
-            self._update_trade_pnl(order.order_id, exit_pnl, total_fees)
+            self._update_trade_pnl(order.order_id, exit_pnl, total_fees, exit_reason)
             return True
 
         try:
@@ -619,7 +620,7 @@ class Executor:
             order.pnl = exit_pnl
             order.state = OrderState.CANCELLED
             self._risk.record_settlement(order.signal.ticker, exit_pnl)
-            self._update_trade_pnl(order.order_id, exit_pnl, total_fees)
+            self._update_trade_pnl(order.order_id, exit_pnl, total_fees, exit_reason)
             logger.info(
                 "Exit sell placed: %s %s x%d est_pnl=%s fees=%s",
                 order.signal.side.value,
@@ -749,17 +750,21 @@ class Executor:
         order_id: str,
         pnl: Decimal,
         fees: Decimal | None = None,
+        exit_reason: str | None = None,
     ) -> None:
+        sets = ["pnl = ?"]
+        params: list[object] = [str(pnl)]
         if fees is not None:
-            self._db.execute(
-                "UPDATE trades SET pnl = ?, fees = ? WHERE order_id = ?",
-                (str(pnl), str(fees), order_id),
-            )
-        else:
-            self._db.execute(
-                "UPDATE trades SET pnl = ? WHERE order_id = ?",
-                (str(pnl), order_id),
-            )
+            sets.append("fees = ?")
+            params.append(str(fees))
+        if exit_reason is not None:
+            sets.append("exit_reason = ?")
+            params.append(exit_reason)
+        params.append(order_id)
+        self._db.execute(
+            f"UPDATE trades SET {', '.join(sets)} WHERE order_id = ?",
+            params,
+        )
         self._db.commit()
 
     def log_window_analysis(
@@ -849,6 +854,8 @@ def _init_db(path: str) -> sqlite3.Connection:
         conn.execute("ALTER TABLE trades ADD COLUMN fees TEXT")
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE trades ADD COLUMN route TEXT DEFAULT 'taker'")
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE trades ADD COLUMN exit_reason TEXT")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

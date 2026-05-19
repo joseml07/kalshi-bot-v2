@@ -1153,10 +1153,8 @@ async def _slow_housekeeping_loop(
                     executor,
                     ticker,
                     kalshi_yes_price,
-                    settings,
                     alerter,
                     window,
-                    k=dynamic_k,
                 )
 
                 if settings.strategy_name == "lwm":
@@ -1334,10 +1332,8 @@ async def _evaluate_exits(
     executor: Executor,
     ticker: str,
     kalshi_yes_price: Decimal,
-    settings: Settings,
     alerter: AlerterLike,
     window: WindowState,
-    k: float = 150.0,
 ) -> None:
     filled = [o for o in executor.filled_orders if o.signal.ticker == ticker]
     if not filled:
@@ -1350,38 +1346,22 @@ async def _evaluate_exits(
             else Decimal("1") - kalshi_yes_price
         )
 
-        unrealized_loss = order.price - current_value
-
-        real_prob = estimate_up_probability(
-            window.price_change_pct, window.seconds_remaining, k=k
-        )
-        if order.signal.side.value == "yes":
-            current_edge = real_prob - float(kalshi_yes_price)
-        else:
-            current_edge = (1 - real_prob) - float(Decimal("1") - kalshi_yes_price)
-
+        # Binary contracts cap loss at entry_price by construction. Backtest of 306
+        # settled trades showed stop_loss + edge_gone exits converted 112 winning
+        # entries into recorded losses (-$95.92 vs hold-to-settlement). Only the
+        # time_exit rule remains: lock in mark before final-30s settlement risk.
         should_exit = False
         reason = ""
-
         if order.signal.seconds_remaining > 90 and window.seconds_remaining < 30:
             should_exit = True
-            reason = f"time_exit: entered_at={order.signal.seconds_remaining}s now={window.seconds_remaining}s"
-        elif unrealized_loss >= max(
-            Decimal(str(settings.exit_stop_loss)), order.price * Decimal("0.40")
-        ):
-            should_exit = True
-            reason = f"stop_loss: unrealized_loss={unrealized_loss}/contract"
-        elif current_edge <= 0:
-            order.negative_edge_count += 1
-            if order.negative_edge_count >= 3:
-                should_exit = True
-                reason = f"edge_gone: current_edge={current_edge:.4f}"
-        else:
-            order.negative_edge_count = 0
+            reason = (
+                f"time_exit: entered_at={order.signal.seconds_remaining}s "
+                f"now={window.seconds_remaining}s"
+            )
 
         if should_exit:
             logger.info("exit_signal", ticker=ticker, reason=reason)
-            exited = await executor.exit_position(order, current_value)
+            exited = await executor.exit_position(order, current_value, exit_reason=reason.split(":", 1)[0])
             if exited and alerter is not None:
                 await alerter.trade_exited(
                     ticker, order.signal.side.value, order.contracts, reason
