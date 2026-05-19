@@ -47,6 +47,7 @@ Optional:
 - Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`)
 - Discord (`DISCORD_WEBHOOK_URL`)
 - OpenRouter (`OPENROUTER_API_KEY`)
+- Paper trading (`PAPER_BALANCE`)
 
 ### 3) Run quality gates
 

@@ -386,10 +386,13 @@ def make_status_command(
     risk_manager: Any, executor: Any, client: Any, settings: Any
 ) -> CommandBuilder:
     async def handler() -> str:
-        try:
-            balance = await client.get_balance()
-        except Exception:
-            balance = Decimal("?")
+        if settings.trading_mode == "paper":
+            balance = Decimal(str(settings.paper_balance))
+        else:
+            try:
+                balance = await client.get_balance()
+            except Exception:
+                balance = Decimal("?")
         kill = "YES" if Path("KILL_SWITCH").exists() else "no"
         return (
             f"**Bot Status**\n"
@@ -413,8 +416,10 @@ def make_pnl_command(risk_manager: Any) -> CommandBuilder:
     return handler
 
 
-def make_balance_command(client: Any) -> CommandBuilder:
+def make_balance_command(client: Any, settings: Any) -> CommandBuilder:
     async def handler() -> str:
+        if settings.trading_mode == "paper":
+            return f"**Balance**\n${Decimal(str(settings.paper_balance))}"
         try:
             balance = await client.get_balance()
             return f"**Balance**\n${balance}"
@@ -581,6 +586,11 @@ def make_maker_command(db_path: str = "trades.db") -> CommandBuilder:
 
 def make_config_command(settings: Any) -> CommandBuilder:
     async def handler() -> str:
+        paper_line = (
+            f"\nPaper balance: ${settings.paper_balance:.2f}"
+            if settings.trading_mode == "paper"
+            else ""
+        )
         return (
             "**Current Config**\n"
             f"Mode: {settings.trading_mode} | Env: {settings.kalshi_env}\n"
@@ -591,6 +601,7 @@ def make_config_command(settings: Any) -> CommandBuilder:
             f"Maker first: {'ON' if settings.maker_first else 'off'}\n"
             f"Maker horizon: {settings.maker_fill_horizon_s}s\n"
             f"Exit stop loss: ${settings.exit_stop_loss:.2f}/contract"
+            f"{paper_line}"
         )
 
     return handler

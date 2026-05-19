@@ -224,9 +224,18 @@ class CachedState:
         self._markets_refreshed_mono = 0.0
         self.active_symbols: set[str] = set()
 
-    async def refresh_balance(self, client: KalshiClient, ttl_s: float = 10.0) -> None:
+    async def refresh_balance(
+        self,
+        client: KalshiClient,
+        ttl_s: float = 10.0,
+        simulated_balance: Decimal | None = None,
+    ) -> None:
         """Refresh cached balance if TTL expired."""
         now = time.monotonic()
+        if simulated_balance is not None:
+            self.balance = simulated_balance
+            self._balance_refreshed_mono = now
+            return
         if now - self._balance_refreshed_mono < ttl_s:
             return
         with contextlib.suppress(Exception):
@@ -365,7 +374,7 @@ def _register_commands(
 ) -> None:
     alerter.register("status", make_status_command(risk, executor, client, settings))
     alerter.register("pnl", make_pnl_command(risk))
-    alerter.register("balance", make_balance_command(client))
+    alerter.register("balance", make_balance_command(client, settings))
     alerter.register("positions", make_positions_command(client))
     alerter.register("trades", make_trades_command())
     alerter.register("kill", make_kill_command())
@@ -397,7 +406,7 @@ def _register_discord_commands(
         "status", make_discord_status_command(risk, executor, client, settings)
     )
     alerter.register("pnl", make_discord_pnl_command(risk))
-    alerter.register("balance", make_discord_balance_command(client))
+    alerter.register("balance", make_discord_balance_command(client, settings))
     alerter.register("positions", make_discord_positions_command(client))
     alerter.register("trades", make_discord_trades_command())
     alerter.register("kill", make_discord_kill_command())
@@ -491,7 +500,11 @@ async def run_bot(settings: Settings) -> None:
     ws_feed = KalshiOrderbookFeed(settings, eval_trigger=eval_trigger)
     executor.attach_orderbook_source(ws_feed.get_orderbook)
 
-    await cached.refresh_balance(client, ttl_s=0.0)
+    await cached.refresh_balance(
+        client,
+        ttl_s=0.0,
+        simulated_balance=Decimal(str(settings.paper_balance)) if dry_run else None,
+    )
     await cached.refresh_positions(client, risk, ttl_s=0.0)
     await cached.refresh_markets(client, tracker, settings, ttl_s=0.0)
     initial_tickers = {
@@ -870,7 +883,12 @@ async def _slow_housekeeping_loop(
                 await _settle_paper_positions(executor, tracker, alerter)
             await _check_settlements(client, executor, alerter)
 
-            await cached.refresh_balance(client)
+            await cached.refresh_balance(
+                client,
+                simulated_balance=Decimal(str(settings.paper_balance))
+                if settings.trading_mode == "paper"
+                else None,
+            )
             await cached.refresh_positions(client, risk)
             await cached.refresh_markets(client, tracker, settings)
 

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     # Trading mode
     trading_mode: str = Field(default="paper", pattern=r"^(paper|live)$")
+    paper_balance: float = Field(default=25.0, ge=0.0)
 
     # Risk limits
     daily_loss_limit: float = Field(default=25.0)

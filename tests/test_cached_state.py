@@ -42,6 +42,16 @@ async def test_cached_state_refresh_balance_updates_on_fetch() -> None:
     assert cached.balance == Decimal("123.45")
 
 
+async def test_cached_state_refresh_balance_uses_simulated_balance() -> None:
+    cached = CachedState()
+    client = _ClientStub([Decimal("123.45")])
+
+    await cached.refresh_balance(client, simulated_balance=Decimal("25.00"))
+
+    assert client.calls == 0
+    assert cached.balance == Decimal("25.00")
+
+
 def test_cached_state_get_market_returns_none_when_missing() -> None:
     cached = CachedState()
 

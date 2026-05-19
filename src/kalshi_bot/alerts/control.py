@@ -23,6 +23,7 @@ _SETTABLE: dict[str, tuple[str, type]] = {
     "kelly_fraction": ("kelly_fraction", float),
     "daily_loss_limit": ("daily_loss_limit", float),
     "max_concurrent_positions": ("max_concurrent_positions", int),
+    "paper_balance": ("paper_balance", float),
 }
 
 
@@ -67,6 +68,9 @@ def _validate(alias: str, value: Any) -> None:
     elif alias == "max_concurrent_positions":
         if int(value) < 0:
             raise SettingError("max_concurrent_positions must be non-negative")
+    elif alias == "paper_balance":
+        if float(value) < 0:
+            raise SettingError("paper_balance must be non-negative")
     elif alias in ("min_price", "max_price"):
         if not (0.0 < float(value) < 1.0):
             raise SettingError(f"{alias} must be between 0.0 and 1.0")

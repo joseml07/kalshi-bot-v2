@@ -279,10 +279,13 @@ class TelegramAlerter:
 
 def make_status_command(risk_manager: Any, executor: Any, client: Any, settings: Any) -> CommandHandler:
     async def handler() -> str:
-        try:
-            balance = await client.get_balance()
-        except Exception:
-            balance = Decimal("?")
+        if settings.trading_mode == "paper":
+            balance = Decimal(str(settings.paper_balance))
+        else:
+            try:
+                balance = await client.get_balance()
+            except Exception:
+                balance = Decimal("?")
         mode = settings.trading_mode
         env = settings.kalshi_env
         kill = "YES" if Path("KILL_SWITCH").exists() else "no"
@@ -308,8 +311,10 @@ def make_pnl_command(risk_manager: Any) -> CommandHandler:
     return handler
 
 
-def make_balance_command(client: Any) -> CommandHandler:
+def make_balance_command(client: Any, settings: Any) -> CommandHandler:
     async def handler() -> str:
+        if settings.trading_mode == "paper":
+            return f"<b>Balance</b>\n${Decimal(str(settings.paper_balance))}"
         try:
             balance = await client.get_balance()
             return f"<b>Balance</b>\n${balance}"
@@ -520,6 +525,11 @@ def make_signals_command(db_path: str = "trades.db") -> CommandHandler:
 
 def make_config_command(settings: Any) -> CommandHandler:
     async def handler() -> str:
+        paper_line = (
+            f"\nPaper balance: ${settings.paper_balance:.2f}"
+            if settings.trading_mode == "paper"
+            else ""
+        )
         return (
             "<b>Current Config</b>\n"
             f"Mode: {settings.trading_mode} | Env: {settings.kalshi_env}\n"
@@ -533,6 +543,7 @@ def make_config_command(settings: Any) -> CommandHandler:
             f"Logistic k: {settings.logistic_k}\n"
             f"Daily loss limit: ${settings.daily_loss_limit:.2f}\n"
             f"Max per trade: ${settings.max_per_trade:.2f}"
+            f"{paper_line}"
         )
 
     return handler
