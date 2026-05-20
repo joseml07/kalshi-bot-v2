@@ -5,7 +5,11 @@ from __future__ import annotations
 import math
 from decimal import Decimal
 
+import structlog
+
 from kalshi_bot.strategy.asset_config import SignalStrength, get_asset_config
+
+logger = structlog.get_logger(__name__)
 
 MIN_CONTRACTS = 1
 MAX_CONTRACTS = 10
@@ -58,6 +62,9 @@ def kelly_size(
         or 0 if the bet is not +EV.
     """
     if fraction <= 0:
+        return 0
+    if bankroll <= 0:
+        logger.warning("kelly_size_zero_bankroll", win_prob=win_prob, price=price)
         return 0
     f = kelly_fraction(win_prob, price)
     if f <= 0:

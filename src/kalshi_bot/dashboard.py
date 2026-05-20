@@ -132,6 +132,9 @@ def api_summary(all: bool = False) -> dict[str, Any]:  # noqa: A002
     summary["open_positions"] = open_rows
     summary["total_in_positions"] = sum(r["cost"] for r in open_rows)
     summary["session_active"] = ss is not None
+    runtime = _read_live_state()
+    summary["trading_mode"] = runtime.get("trading_mode", "unknown")
+    summary["balance"] = runtime.get("balance")
     return summary
 
 

@@ -238,9 +238,11 @@ class CachedState:
             return
         if now - self._balance_refreshed_mono < ttl_s:
             return
-        with contextlib.suppress(Exception):
+        try:
             self.balance = await client.get_balance()
             self._balance_refreshed_mono = now
+        except Exception:
+            logger.exception("balance_refresh_failed")
 
     async def refresh_positions(
         self,
@@ -505,6 +507,14 @@ async def run_bot(settings: Settings) -> None:
         ttl_s=0.0,
         simulated_balance=Decimal(str(settings.paper_balance)) if dry_run else None,
     )
+    if not dry_run and cached.balance <= 0:
+        logger.critical(
+            "live_mode_zero_balance — refusing to start. "
+            "Check API credentials and account funding.",
+            balance=str(cached.balance),
+        )
+        raise SystemExit(1)
+    logger.info("startup_balance", balance=str(cached.balance), mode="paper" if dry_run else "live")
     await cached.refresh_positions(client, risk, ttl_s=0.0)
     await cached.refresh_markets(client, tracker, settings, ttl_s=0.0)
     initial_tickers = {

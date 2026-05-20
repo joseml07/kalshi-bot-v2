@@ -245,7 +245,9 @@ pre.code {
       <p>Phase 13 view: WebSocket live feed, interactive analytics, trade detail panel.</p>
     </div>
     <div class="badges">
+      <span class="badge" id="modeBadge" style="border-color:var(--amber)"><strong id="modeText" style="color:var(--amber)">PAPER</strong></span>
       <span class="badge"><span id="statusDot" class="pulse idle"></span><strong id="statusText">connecting</strong></span>
+      <span class="badge">Bal: <strong id="balanceText">—</strong></span>
       <span class="badge">Updated: <strong id="updated">—</strong></span>
       <span class="badge">View: <strong id="viewName">session</strong></span>
       <span class="badge" id="healthBadge"><strong>health:</strong> checking</span>
@@ -1135,6 +1137,18 @@ async function loadStatic(){
   renderEdgeHistogram((trades||[]).filter(t=>t.pnl!=null));
   renderSymbolChart(symbols||[]);
   renderDailyGauge(summary.total_pnl||0);
+  // Update trading mode + balance badges
+  const mode = (summary.trading_mode||'unknown').toUpperCase();
+  const modeEl = document.getElementById('modeText');
+  const modeBadge = document.getElementById('modeBadge');
+  if(modeEl){
+    modeEl.textContent = mode;
+    const isLive = mode === 'LIVE';
+    modeEl.style.color = isLive ? 'var(--red)' : 'var(--amber)';
+    if(modeBadge) modeBadge.style.borderColor = isLive ? 'var(--red)' : 'var(--amber)';
+  }
+  const balEl = document.getElementById('balanceText');
+  if(balEl && summary.balance != null) balEl.textContent = '$'+Number(summary.balance).toFixed(2);
   renderSkipReasons((health||{}).runtime||{});
   renderSettings(settings);
   renderKillState(killState);
