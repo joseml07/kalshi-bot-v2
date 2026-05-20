@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from kalshi_bot.config import Settings
-from kalshi_bot.execution.executor import Executor
+from kalshi_bot.execution.executor import Executor, OrderState
 from kalshi_bot.models.market import OrderBook, OrderBookLevel
 from kalshi_bot.risk.manager import RiskManager, RiskVetoError
 from kalshi_bot.strategy.signals import Side, Signal, StrategyName
@@ -57,6 +57,7 @@ class _StubClient:
         self.cancelled: list[str] = []
         self._next_id = 0
         self.fail_next: bool = False
+        self.order_status: dict[str, dict[str, Any]] = {}
 
     async def place_order(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
@@ -65,6 +66,9 @@ class _StubClient:
             raise RuntimeError("simulated place_order failure")
         self._next_id += 1
         return {"order_id": f"oid-{self._next_id}"}
+
+    async def get_order(self, order_id: str) -> dict[str, Any]:
+        return self.order_status.get(order_id, {"status": "pending"})
 
     async def cancel_order(self, order_id: str) -> None:
         self.cancelled.append(order_id)
@@ -247,4 +251,288 @@ async def test_promote_to_taker_skips_when_no_orderbook(
     assert len(client.calls) == 1
     assert order.state.value == "cancelled"
     assert any("skip_taker_promote_no_orderbook" in rec.message for rec in caplog.records)
+    await executor.close()
+
+
+# ---------------------------------------------------------------------------
+# Bug 1: EXITING state and exit sell tracking
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exit_position_live_transitions_to_exiting(tmp_path: Path) -> None:
+    """Live exit_position must set EXITING, not CANCELLED, and NOT record settlement."""
+    settings = _settings()
+    risk = RiskManager(settings)
+    client = _StubClient()
+    executor = Executor(
+        client,  # type: ignore[arg-type]
+        risk,
+        dry_run=False,
+        db_path=str(tmp_path / "trades.db"),
+        settings=settings,
+    )
+
+    sig = _signal()
+    order = await executor.submit(sig, Decimal("100"))
+    assert order is not None
+    order.state = OrderState.FILLED
+    order.fill_time = time.monotonic()
+
+    exited, events = await executor.exit_position(order, Decimal("0.60"))
+    assert exited is True
+    assert order.state == OrderState.EXITING
+    assert order.exit_order_id is not None
+    assert order.exit_price == Decimal("0.60")
+    # PnL should NOT be finalized yet
+    assert order.pnl is None
+    # Ticker should still be in active_tickers (EXITING is active)
+    assert sig.ticker in executor.active_tickers
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_exit_position_paper_finalizes_immediately(tmp_path: Path) -> None:
+    """Paper (dry_run) exit must still finalize immediately — no EXITING state."""
+    settings = _settings()
+    risk = RiskManager(settings)
+    client = _StubClient()
+    executor = Executor(
+        client,  # type: ignore[arg-type]
+        risk,
+        dry_run=True,
+        db_path=str(tmp_path / "trades.db"),
+        settings=settings,
+    )
+
+    sig = _signal()
+    order = await executor.submit(sig, Decimal("100"))
+    assert order is not None
+    assert order.state == OrderState.FILLED  # paper fills immediately
+
+    exited, _events = await executor.exit_position(order, Decimal("0.60"))
+    assert exited is True
+    assert order.state == OrderState.CANCELLED  # finalized, not EXITING
+    assert order.pnl is not None
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_check_pending_fills_confirms_exit_sell(tmp_path: Path) -> None:
+    """When the exit sell fills, check_pending_fills must finalize PnL."""
+    settings = _settings()
+    risk = RiskManager(settings)
+    client = _StubClient()
+    executor = Executor(
+        client,  # type: ignore[arg-type]
+        risk,
+        dry_run=False,
+        db_path=str(tmp_path / "trades.db"),
+        settings=settings,
+    )
+
+    sig = _signal()
+    order = await executor.submit(sig, Decimal("100"))
+    assert order is not None
+    order.state = OrderState.FILLED
+    order.fill_time = time.monotonic()
+
+    # Place exit sell → transitions to EXITING
+    exited, _ = await executor.exit_position(order, Decimal("0.60"))
+    assert exited is True
+    assert order.state == OrderState.EXITING
+    sell_oid = order.exit_order_id
+    assert sell_oid is not None
+
+    # Stub the sell order as filled
+    client.order_status[sell_oid] = {"status": "filled", "price": 0.60}
+
+    await executor.check_pending_fills()
+
+    assert order.state == OrderState.CANCELLED
+    assert order.pnl is not None
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_settlement_races_exiting_order(tmp_path: Path) -> None:
+    """If the market settles while a sell is in-flight, settlement PnL wins."""
+    settings = _settings()
+    risk = RiskManager(settings)
+    client = _StubClient()
+    executor = Executor(
+        client,  # type: ignore[arg-type]
+        risk,
+        dry_run=False,
+        db_path=str(tmp_path / "trades.db"),
+        settings=settings,
+    )
+
+    sig = _signal(side=Side.NO)
+    order = await executor.submit(sig, Decimal("100"))
+    assert order is not None
+    order.state = OrderState.FILLED
+    order.fill_time = time.monotonic()
+
+    # Place exit sell → EXITING
+    exited, _ = await executor.exit_position(order, Decimal("0.60"))
+    assert exited is True
+    assert order.state == OrderState.EXITING
+
+    # Market settles as "no" (we win) before the sell fills
+    executor.record_settlement(sig.ticker, "no")
+    assert order.state == OrderState.SETTLED
+    assert order.pnl is not None
+    assert order.pnl > 0  # won the bet
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_exiting_excluded_from_filled_orders(tmp_path: Path) -> None:
+    """EXITING orders must not appear in filled_orders (prevents double-exit)."""
+    settings = _settings()
+    risk = RiskManager(settings)
+    client = _StubClient()
+    executor = Executor(
+        client,  # type: ignore[arg-type]
+        risk,
+        dry_run=False,
+        db_path=str(tmp_path / "trades.db"),
+        settings=settings,
+    )
+
+    sig = _signal()
+    order = await executor.submit(sig, Decimal("100"))
+    assert order is not None
+    order.state = OrderState.FILLED
+    order.fill_time = time.monotonic()
+    assert order in executor.filled_orders
+
+    await executor.exit_position(order, Decimal("0.60"))
+    assert order.state == OrderState.EXITING
+    assert order not in executor.filled_orders
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_exiting_in_active_tickers(tmp_path: Path) -> None:
+    """EXITING orders must keep their ticker in active_tickers."""
+    settings = _settings()
+    risk = RiskManager(settings)
+    client = _StubClient()
+    executor = Executor(
+        client,  # type: ignore[arg-type]
+        risk,
+        dry_run=False,
+        db_path=str(tmp_path / "trades.db"),
+        settings=settings,
+    )
+
+    sig = _signal()
+    order = await executor.submit(sig, Decimal("100"))
+    assert order is not None
+    order.state = OrderState.FILLED
+    order.fill_time = time.monotonic()
+
+    await executor.exit_position(order, Decimal("0.60"))
+    assert sig.ticker in executor.active_tickers
+    await executor.close()
+
+
+# ---------------------------------------------------------------------------
+# Bug 3: Orphan reconciliation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_orphans_cleans_old_trades(tmp_path: Path) -> None:
+    """Trades with NULL pnl older than 30 min are marked as orphans on startup."""
+    import sqlite3
+
+    db_path = str(tmp_path / "trades.db")
+    # Pre-create the DB and insert an old orphaned trade
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL, order_id TEXT NOT NULL,
+            ticker TEXT NOT NULL, symbol TEXT NOT NULL,
+            strategy TEXT NOT NULL, side TEXT NOT NULL,
+            contracts INTEGER NOT NULL, price TEXT NOT NULL,
+            edge TEXT NOT NULL, net_edge TEXT NOT NULL,
+            pnl TEXT, fees TEXT, route TEXT DEFAULT 'taker',
+            exit_reason TEXT)"""
+    )
+    conn.execute(
+        """INSERT INTO trades (timestamp, order_id, ticker, symbol, strategy,
+           side, contracts, price, edge, net_edge, pnl, fees)
+           VALUES (datetime('now', '-2 hours'), 'old-orphan', 'KXBTC-OLD',
+                   'BTC', 'momentum', 'no', 5, '0.50', '0.1', '0.08', NULL, NULL)"""
+    )
+    conn.commit()
+    conn.close()
+
+    settings = _settings()
+    risk = RiskManager(settings)
+    client = _StubClient()
+    executor = Executor(
+        client,  # type: ignore[arg-type]
+        risk,
+        dry_run=True,
+        db_path=db_path,
+        settings=settings,
+    )
+
+    row = executor._db.execute(
+        "SELECT pnl, exit_reason FROM trades WHERE order_id = 'old-orphan'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "0"
+    assert row[1] == "orphan_reconciled"
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_orphans_preserves_recent(tmp_path: Path) -> None:
+    """Trades with NULL pnl newer than 30 min are NOT touched."""
+    import sqlite3
+
+    db_path = str(tmp_path / "trades.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL, order_id TEXT NOT NULL,
+            ticker TEXT NOT NULL, symbol TEXT NOT NULL,
+            strategy TEXT NOT NULL, side TEXT NOT NULL,
+            contracts INTEGER NOT NULL, price TEXT NOT NULL,
+            edge TEXT NOT NULL, net_edge TEXT NOT NULL,
+            pnl TEXT, fees TEXT, route TEXT DEFAULT 'taker',
+            exit_reason TEXT)"""
+    )
+    conn.execute(
+        """INSERT INTO trades (timestamp, order_id, ticker, symbol, strategy,
+           side, contracts, price, edge, net_edge, pnl, fees)
+           VALUES (datetime('now', '-5 minutes'), 'recent-trade', 'KXBTC-NEW',
+                   'BTC', 'momentum', 'no', 5, '0.50', '0.1', '0.08', NULL, NULL)"""
+    )
+    conn.commit()
+    conn.close()
+
+    settings = _settings()
+    risk = RiskManager(settings)
+    client = _StubClient()
+    executor = Executor(
+        client,  # type: ignore[arg-type]
+        risk,
+        dry_run=True,
+        db_path=db_path,
+        settings=settings,
+    )
+
+    row = executor._db.execute(
+        "SELECT pnl FROM trades WHERE order_id = 'recent-trade'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] is None  # still NULL — not touched
     await executor.close()

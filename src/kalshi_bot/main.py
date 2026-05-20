@@ -71,7 +71,7 @@ from kalshi_bot.config import Settings
 from kalshi_bot.control_channel import drain as drain_control_queue
 from kalshi_bot.data.recorder import DataRecorder
 from kalshi_bot.data.window_tracker import WindowState, WindowTracker
-from kalshi_bot.execution.executor import Executor
+from kalshi_bot.execution.executor import Executor, OrderState
 from kalshi_bot.logging_config import setup_logging
 from kalshi_bot.models.price import PriceTick
 from kalshi_bot.models.market import Market
@@ -1123,7 +1123,9 @@ async def _slow_housekeeping_loop(
                         )
 
                 active_orders = [
-                    o for o in executor.filled_orders if o.signal.ticker == ticker
+                    o for o in executor._orders.values()
+                    if o.signal.ticker == ticker
+                    and o.state in (OrderState.FILLED, OrderState.EXITING)
                 ]
                 if active_orders:
                     total_contracts = sum(o.contracts for o in active_orders)
@@ -1173,7 +1175,8 @@ async def _slow_housekeeping_loop(
                 await _evaluate_exits(
                     executor,
                     ticker,
-                    kalshi_yes_price,
+                    best_bid,
+                    best_no_bid,
                     alerter,
                     window,
                 )
@@ -1388,7 +1391,8 @@ async def _check_settlements(
 async def _evaluate_exits(
     executor: Executor,
     ticker: str,
-    kalshi_yes_price: Decimal,
+    best_yes_bid: Decimal | None,
+    best_no_bid: Decimal | None,
     alerter: AlerterLike,
     window: WindowState,
 ) -> None:
@@ -1397,11 +1401,14 @@ async def _evaluate_exits(
         return
 
     for order in filled:
-        current_value = (
-            kalshi_yes_price
-            if order.signal.side.value == "yes"
-            else Decimal("1") - kalshi_yes_price
-        )
+        if order.signal.side.value == "yes":
+            if best_yes_bid is None:
+                continue
+            current_value = best_yes_bid
+        else:
+            if best_no_bid is None:
+                continue
+            current_value = best_no_bid
 
         # Binary contracts cap loss at entry_price by construction. Backtest of 306
         # settled trades showed stop_loss + edge_gone exits converted 112 winning

@@ -47,6 +47,7 @@ class OrderState(str, Enum):
 
     PENDING = "pending"
     FILLED = "filled"
+    EXITING = "exiting"
     CANCELLED = "cancelled"
     SETTLED = "settled"
 
@@ -79,6 +80,10 @@ class TrackedOrder:
         self.maker_timeout: int = maker_timeout_for_strength(
             signal.signal_strength, signal.symbol, global_horizon=90
         )
+        # Exit sell tracking (populated when state transitions to EXITING)
+        self.exit_order_id: str | None = None
+        self.exit_price: Decimal | None = None
+        self.exit_reason: str | None = None
 
     @property
     def fee_per_contract(self) -> float:
@@ -111,6 +116,7 @@ class Executor:
         self._get_orderbook: (
             Callable[[str], tuple[OrderBook, datetime] | None] | None
         ) = None
+        self._reconcile_orphans()
 
     def attach_orderbook_source(
         self,
@@ -124,6 +130,24 @@ class Executor:
         plain callable avoids coupling the executor to the WS feed class.
         """
         self._get_orderbook = fn
+
+    def _reconcile_orphans(self) -> None:
+        """Mark old trades with pnl=NULL as cancelled on startup.
+
+        After a restart the in-memory _orders dict is empty. Any trades in
+        the DB with pnl IS NULL AND fees IS NULL older than 30 minutes are
+        orphans whose markets have long since settled. Mark them pnl='0' so
+        the dashboard no longer shows them as open positions.
+        """
+        updated = self._db.execute(
+            """UPDATE trades
+               SET pnl = '0', exit_reason = 'orphan_reconciled'
+               WHERE pnl IS NULL AND fees IS NULL
+                 AND timestamp < datetime('now', '-30 minutes')""",
+        ).rowcount
+        if updated:
+            self._db.commit()
+            logger.info("reconcile_orphans cleaned=%d stale trades", updated)
 
     async def submit(self, signal: Signal, bankroll: Decimal) -> TrackedOrder | None:
         """Size, place, and track an order for the given signal.
@@ -255,6 +279,66 @@ class Executor:
                     order.signal.ticker,
                     order.price,
                 )
+
+        # --- Poll EXITING orders (exit sells awaiting fill confirmation) ---
+        for oid, order in list(self._orders.items()):
+            if order.state != OrderState.EXITING:
+                continue
+            if order.exit_order_id is None:
+                continue
+            try:
+                api_order = await self._client.get_order(order.exit_order_id)
+            except Exception:
+                continue
+            status = api_order.get("status", "")
+            if status in ("executed", "filled"):
+                actual_price = api_order.get("price")
+                sell_price = (
+                    Decimal(str(actual_price))
+                    if actual_price
+                    else order.exit_price or Decimal("0")
+                )
+                pnl_per = sell_price - order.price
+                raw_pnl = pnl_per * order.contracts
+                if order.route == "maker":
+                    entry_fee = maker_fee(order.contracts, float(order.price))
+                else:
+                    entry_fee = taker_fee(order.contracts, float(order.price))
+                exit_fee = taker_fee(order.contracts, float(sell_price))
+                total_fees = entry_fee + exit_fee
+                exit_pnl = raw_pnl - total_fees
+
+                order.pnl = exit_pnl
+                order.state = OrderState.CANCELLED
+                self._risk.record_settlement(
+                    order.signal.ticker, exit_pnl, side=order.signal.side.value,
+                )
+                self._update_trade_pnl(
+                    oid, exit_pnl, total_fees, order.exit_reason,
+                )
+                logger.info(
+                    "exit_sell_confirmed sell_oid=%s ticker=%s pnl=%s",
+                    order.exit_order_id,
+                    order.signal.ticker,
+                    exit_pnl,
+                )
+            elif status == "cancelled":
+                # Market settled or exchange killed the sell order.
+                # If record_settlement already handled this (SETTLED state),
+                # skip. Otherwise mark as cancelled with pnl=0.
+                if order.state == OrderState.EXITING:
+                    order.state = OrderState.CANCELLED
+                    order.pnl = Decimal("0")
+                    self._risk.record_settlement(
+                        order.signal.ticker, Decimal("0"),
+                        side=order.signal.side.value,
+                    )
+                    self._update_trade_pnl(oid, Decimal("0"))
+                    logger.info(
+                        "exit_sell_cancelled sell_oid=%s ticker=%s",
+                        order.exit_order_id,
+                        order.signal.ticker,
+                    )
 
     async def promote_to_taker(self) -> list[TrackedOrder]:
         """Cancel maker orders past their fill horizon and re-place as taker.
@@ -556,7 +640,7 @@ class Executor:
         for oid, order in self._orders.items():
             if order.signal.ticker != ticker:
                 continue
-            if order.state not in (OrderState.FILLED, OrderState.PENDING):
+            if order.state not in (OrderState.FILLED, OrderState.PENDING, OrderState.EXITING):
                 continue
             won = (
                 result == "yes" if order.signal.side.value == "yes" else result == "no"
@@ -631,28 +715,27 @@ class Executor:
             return True, events
 
         try:
-            await self._client.place_order(
+            sell_resp = await self._client.place_order(
                 ticker=order.signal.ticker,
                 action="sell",
                 side=order.signal.side.value,
                 price_dollars=sell_order_price,
                 count=order.contracts,
             )
-            order.pnl = exit_pnl
-            order.state = OrderState.CANCELLED
-            evs = self._risk.record_settlement(order.signal.ticker, exit_pnl, side=order.signal.side.value)
-            if evs:
-                events.append(evs)
-            self._update_trade_pnl(order.order_id, exit_pnl, total_fees, exit_reason)
+            sell_oid = str(sell_resp["order_id"])
+            order.exit_order_id = sell_oid
+            order.exit_price = sell_order_price
+            order.exit_reason = exit_reason
+            order.state = OrderState.EXITING
             logger.info(
-                "Exit sell placed: %s %s x%d est_pnl=%s fees=%s",
+                "Exit sell placed: %s %s x%d @ %s sell_oid=%s",
                 order.signal.side.value,
                 order.signal.ticker,
                 order.contracts,
-                exit_pnl,
-                total_fees,
+                sell_order_price,
+                sell_oid,
             )
-            return True, events
+            return True, []
         except Exception:
             logger.exception("exit_sell_failed", extra={"ticker": order.signal.ticker})
             return False, []
@@ -681,11 +764,11 @@ class Executor:
 
     @property
     def active_tickers(self) -> set[str]:
-        """Tickers with pending or filled (unsettled) orders."""
+        """Tickers with pending, filled, or exiting (unsettled) orders."""
         return {
             o.signal.ticker
             for o in self._orders.values()
-            if o.state in (OrderState.PENDING, OrderState.FILLED)
+            if o.state in (OrderState.PENDING, OrderState.FILLED, OrderState.EXITING)
         }
 
     @property
