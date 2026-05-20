@@ -549,6 +549,101 @@ def api_stats_by_symbol(all: bool = False) -> list[dict[str, Any]]:  # noqa: A00
         return []
 
 
+@app.get("/api/breakdowns")
+def api_breakdowns(all: bool = False) -> dict[str, Any]:  # noqa: A002
+    """Aggregated analytics for the Insights tab.
+
+    Returns six breakdowns over the settled-trades set in one payload so the
+    frontend can render the whole Insights view from a single fetch:
+
+      by_side          : yes vs no — count, wins, pnl, fees
+      by_symbol        : BTC / ETH / SOL — same fields
+      by_side_symbol   : 2D matrix (side × symbol) — surfaces YES-on-BTC type asymmetries
+      by_exit_reason   : counts + pnl per exit_reason value (NULL = held to settlement)
+      by_hour_et       : 24 buckets in America/New_York local time
+      by_dow_et        : 7 buckets, Sun=0..Sat=6, ET local time
+
+    The ?all=true query param toggles session vs. all-time aggregation, mirroring
+    /api/summary and /api/stats. Cancelled rows (pnl='0' AND fees IS NULL) are
+    excluded everywhere — they never filled and would skew the totals.
+
+    All time-bucket aggregation happens client-side from the underlying SQL
+    rows because SQLite's strftime cannot do tz conversion. We hand back raw
+    timestamps + pnl per trade and let the JS bucket into ET locally.
+    """
+    ss = None if all else _session_start()
+    where = "WHERE NOT (pnl = '0' AND fees IS NULL) AND pnl IS NOT NULL"
+    params: tuple[Any, ...] = ()
+    if ss:
+        where = (
+            "WHERE NOT (pnl = '0' AND fees IS NULL) AND pnl IS NOT NULL "
+            "AND timestamp >= ?"
+        )
+        params = (ss,)
+
+    def _agg(group_cols: str) -> list[dict[str, Any]]:
+        """Run a GROUP BY against the settled-trade where-clause."""
+        try:
+            return _query(
+                f"""SELECT {group_cols},
+                     COUNT(*) as n,
+                     SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+                     SUM(CASE WHEN CAST(pnl AS REAL) < 0 THEN 1 ELSE 0 END) as losses,
+                     COALESCE(SUM(CAST(pnl AS REAL)), 0) as pnl,
+                     COALESCE(SUM(CAST(fees AS REAL)), 0) as fees
+                   FROM trades {where}
+                   GROUP BY {group_cols.split(',')[0]}"""
+                if "," not in group_cols
+                else f"""SELECT {group_cols},
+                     COUNT(*) as n,
+                     SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+                     SUM(CASE WHEN CAST(pnl AS REAL) < 0 THEN 1 ELSE 0 END) as losses,
+                     COALESCE(SUM(CAST(pnl AS REAL)), 0) as pnl,
+                     COALESCE(SUM(CAST(fees AS REAL)), 0) as fees
+                   FROM trades {where}
+                   GROUP BY {group_cols}""",  # noqa: S608
+                params,
+            )
+        except Exception:
+            return []
+
+    # exit_reason GROUP BY needs to coalesce NULL into a stable bucket.
+    try:
+        by_exit_reason = _query(
+            f"""SELECT COALESCE(exit_reason, 'settlement') as exit_reason,
+                 COUNT(*) as n,
+                 SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+                 SUM(CASE WHEN CAST(pnl AS REAL) < 0 THEN 1 ELSE 0 END) as losses,
+                 COALESCE(SUM(CAST(pnl AS REAL)), 0) as pnl
+               FROM trades {where}
+               GROUP BY COALESCE(exit_reason, 'settlement')""",  # noqa: S608
+            params,
+        )
+    except Exception:
+        by_exit_reason = []
+
+    # Raw timestamp+pnl pull for client-side ET bucketing. Keep payload small
+    # by selecting just the two columns we need.
+    try:
+        raw_time_rows = _query(
+            f"SELECT timestamp, CAST(pnl AS REAL) as pnl FROM trades {where} "
+            "ORDER BY timestamp",
+            params,
+        )
+    except Exception:
+        raw_time_rows = []
+
+    return {
+        "view": "all-time" if all else "session",
+        "session_start": ss,
+        "by_side": _agg("side"),
+        "by_symbol": _agg("symbol"),
+        "by_side_symbol": _agg("side, symbol"),
+        "by_exit_reason": by_exit_reason,
+        "time_series": raw_time_rows,  # for hour/day-of-week + drawdown + rolling WR
+    }
+
+
 @app.get("/api/price_ticks")
 def api_price_ticks(symbol: str = "BTC", limit: int = 100) -> list[dict[str, Any]]:
     try:
