@@ -59,6 +59,16 @@ class Settings(BaseSettings):
     # Exit management
     exit_stop_loss: float = Field(default=0.10)
 
+    # Per-side risk gates (OFF by default; enable before flipping to live)
+    # Maximum daily loss for a single side (yes or no) before that side is
+    # paused for the rest of the day. None / 0 = disabled.
+    per_side_daily_loss_limit: float = Field(default=0.0, ge=0.0)
+    # Rolling window for side-degradation alerts. When the last N trades on a
+    # side have a win rate below `side_wr_alert_threshold`, an alert fires.
+    side_wr_alert_window: int = Field(default=30, ge=5)
+    side_wr_alert_threshold: float = Field(default=0.30, ge=0.0, le=1.0)
+    side_wr_alerts_enabled: bool = Field(default=False)
+
     # Telegram alerts (optional)
     telegram_enabled: bool = Field(default=False)
     telegram_bot_token: str = Field(default="")

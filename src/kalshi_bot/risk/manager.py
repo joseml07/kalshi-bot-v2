@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -37,6 +38,23 @@ class RiskManager:
         # Lock side per ticker/window to prevent any re-entry in that window
         self._locked_sides: dict[str, str] = {}
 
+        # Per-side daily loss limit. 0 = disabled (matches the pre-feature default).
+        ps_limit = float(getattr(settings, "per_side_daily_loss_limit", 0.0) or 0.0)
+        self._per_side_daily_loss_limit: Decimal | None = (
+            Decimal(str(ps_limit)) if ps_limit > 0 else None
+        )
+        self._per_side_daily_pnl: dict[str, Decimal] = {"yes": Decimal("0"), "no": Decimal("0")}
+        self._per_side_paused_today: set[str] = set()
+
+        # Side degradation monitor (rolling WR alert).
+        self._wr_window = int(getattr(settings, "side_wr_alert_window", 30) or 30)
+        self._wr_threshold = float(getattr(settings, "side_wr_alert_threshold", 0.30) or 0.30)
+        self._wr_alerts_enabled = bool(getattr(settings, "side_wr_alerts_enabled", False))
+        self._recent_wins_yes: deque[bool] = deque(maxlen=self._wr_window)
+        self._recent_wins_no: deque[bool] = deque(maxlen=self._wr_window)
+        # Suppress alert repeats — only re-fire when WR has recovered then dipped again.
+        self._wr_alert_state: dict[str, bool] = {"yes": False, "no": False}
+
     # --- Public API ---
 
     def check(self, signal: Signal, orderbook: OrderBook | None = None) -> None:
@@ -45,6 +63,7 @@ class RiskManager:
         self._check_locked_side(signal)
         self._check_kill_switch()
         self._check_daily_loss()
+        self._check_per_side_daily_loss(signal)
         self._check_concurrent_positions(signal.ticker)
         if orderbook is not None:
             self._check_crossed_book(orderbook)
@@ -68,14 +87,71 @@ class RiskManager:
         self._open_position_tickers.discard(ticker)
         self._locked_sides.pop(ticker, None)
 
-    def record_settlement(self, ticker: str, pnl: Decimal) -> None:
-        """Record a settled position and its P&L."""
+    def record_settlement(
+        self, ticker: str, pnl: Decimal, side: str | None = None
+    ) -> dict[str, Any]:
+        """Record a settled position and its P&L.
+
+        If `side` is provided, also updates per-side daily PnL and rolling WR.
+        Returns a dict describing any side-level events that just fired so the
+        caller can emit alerts/Telegram notifications without coupling the
+        manager to the alerter.
+        """
         self._open_position_tickers.discard(ticker)
         # Keep locked side for window lifetime to prevent re-entry
         self._cooldowns[ticker] = time.monotonic() + self._cooldown_seconds
         self._rotate_day()
         self._daily_pnl += pnl
+
+        events: dict[str, Any] = {}
+        side_key = side.lower() if side else self._locked_sides.get(ticker)
+        if side_key in ("yes", "no"):
+            self._per_side_daily_pnl[side_key] = (
+                self._per_side_daily_pnl.get(side_key, Decimal("0")) + pnl
+            )
+            # Per-side loss-limit gate.
+            if (
+                self._per_side_daily_loss_limit is not None
+                and side_key not in self._per_side_paused_today
+                and -self._per_side_daily_pnl[side_key] >= self._per_side_daily_loss_limit
+            ):
+                self._per_side_paused_today.add(side_key)
+                events["side_paused"] = {
+                    "side": side_key,
+                    "daily_pnl": str(self._per_side_daily_pnl[side_key]),
+                    "limit": str(self._per_side_daily_loss_limit),
+                }
+                logger.warning(
+                    "per_side_pause side=%s daily_pnl=%s limit=%s",
+                    side_key, self._per_side_daily_pnl[side_key],
+                    self._per_side_daily_loss_limit,
+                )
+
+            # Rolling-WR degradation alert.
+            buf = self._recent_wins_yes if side_key == "yes" else self._recent_wins_no
+            buf.append(pnl > 0)
+            if (
+                self._wr_alerts_enabled
+                and len(buf) >= self._wr_window
+            ):
+                wr = sum(1 for w in buf if w) / len(buf)
+                if wr < self._wr_threshold and not self._wr_alert_state[side_key]:
+                    self._wr_alert_state[side_key] = True
+                    events["side_wr_alert"] = {
+                        "side": side_key,
+                        "win_rate": wr,
+                        "window": self._wr_window,
+                        "threshold": self._wr_threshold,
+                    }
+                    logger.warning(
+                        "side_wr_degraded side=%s wr=%.2f window=%d threshold=%.2f",
+                        side_key, wr, self._wr_window, self._wr_threshold,
+                    )
+                elif wr >= self._wr_threshold:
+                    self._wr_alert_state[side_key] = False
+
         logger.info("Settlement %s pnl=%s daily_pnl=%s", ticker, pnl, self._daily_pnl)
+        return events
 
     def reset_session(self, clear_pnl: bool = False) -> dict[str, int]:
         """Clear in-memory risk state so the bot can re-enter tickers.
@@ -138,6 +214,9 @@ class RiskManager:
             logger.info("Day rolled: resetting daily P&L (was %s)", self._daily_pnl)
             self._daily_pnl = Decimal("0")
             self._pnl_date = today
+            # Reset per-side daily state on rollover.
+            self._per_side_daily_pnl = {"yes": Decimal("0"), "no": Decimal("0")}
+            self._per_side_paused_today.clear()
 
     def _check_kill_switch(self) -> None:
         if KILL_SWITCH_FILE.exists():
@@ -147,6 +226,18 @@ class RiskManager:
         if self._daily_pnl <= -self._daily_loss_limit:
             raise RiskVetoError(
                 f"Daily loss limit hit: {self._daily_pnl} <= -{self._daily_loss_limit}"
+            )
+
+    def _check_per_side_daily_loss(self, signal: Signal) -> None:
+        """Per-side daily loss circuit-breaker. Off when limit is unset."""
+        if self._per_side_daily_loss_limit is None:
+            return
+        side = signal.side.value.lower()
+        if side in self._per_side_paused_today:
+            raise RiskVetoError(
+                f"{side} side paused for the day "
+                f"(daily_pnl={self._per_side_daily_pnl.get(side, Decimal('0'))}, "
+                f"limit={self._per_side_daily_loss_limit})"
             )
 
     def _check_concurrent_positions(self, ticker: str) -> None:

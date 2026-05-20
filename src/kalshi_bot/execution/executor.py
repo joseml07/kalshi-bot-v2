@@ -11,6 +11,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
+from typing import Any
 
 from kalshi_bot.client.kalshi import KalshiClient
 from kalshi_bot.config import Settings
@@ -540,8 +541,13 @@ class Executor:
                 )
         return cancelled
 
-    def record_settlement(self, ticker: str, result: str) -> None:
-        """Record that a market settled. Update P&L for matching orders."""
+    def record_settlement(self, ticker: str, result: str) -> list[dict[str, Any]]:
+        """Record that a market settled. Update P&L for matching orders.
+
+        Returns any risk-manager side events (per-side pause, WR degradation)
+        that fired during settlement so the caller can dispatch alerts.
+        """
+        events: list[dict[str, Any]] = []
         for oid, order in self._orders.items():
             if order.signal.ticker != ticker:
                 continue
@@ -558,7 +564,9 @@ class Executor:
             pnl = payout * order.contracts - entry_fee
             order.pnl = pnl
             order.state = OrderState.SETTLED
-            self._risk.record_settlement(ticker, pnl)
+            evs = self._risk.record_settlement(ticker, pnl, side=order.signal.side.value)
+            if evs:
+                events.append(evs)
             self._update_trade_pnl(oid, pnl, entry_fee)
             logger.info(
                 "Settled %s side=%s result=%s won=%s pnl=%s fees=%s",
@@ -569,6 +577,7 @@ class Executor:
                 pnl,
                 entry_fee,
             )
+        return events
 
     async def exit_position(
         self,
@@ -605,7 +614,7 @@ class Executor:
             )
             order.pnl = exit_pnl
             order.state = OrderState.CANCELLED
-            self._risk.record_settlement(order.signal.ticker, exit_pnl)
+            self._risk.record_settlement(order.signal.ticker, exit_pnl, side=order.signal.side.value)
             self._update_trade_pnl(order.order_id, exit_pnl, total_fees, exit_reason)
             return True
 
@@ -619,7 +628,7 @@ class Executor:
             )
             order.pnl = exit_pnl
             order.state = OrderState.CANCELLED
-            self._risk.record_settlement(order.signal.ticker, exit_pnl)
+            self._risk.record_settlement(order.signal.ticker, exit_pnl, side=order.signal.side.value)
             self._update_trade_pnl(order.order_id, exit_pnl, total_fees, exit_reason)
             logger.info(
                 "Exit sell placed: %s %s x%d est_pnl=%s fees=%s",

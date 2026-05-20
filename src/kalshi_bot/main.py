@@ -1303,6 +1303,41 @@ async def _slow_housekeeping_loop(
     await executor.cancel_stale()
 
 
+async def _emit_risk_events(
+    alerter: AlerterLike,
+    events: list[dict[str, Any]],
+) -> None:
+    """Fan out per-side risk events (pause / WR degradation) to the alerter.
+
+    Uses the existing `trade_exited("SYSTEM", ...)` channel so the alerter
+    interface doesn't need a new method.
+    """
+    if not alerter or not events:
+        return
+    for ev in events:
+        for kind, payload in ev.items():
+            if kind == "side_paused":
+                side = payload.get("side", "?")
+                pnl = payload.get("daily_pnl", "?")
+                limit = payload.get("limit", "?")
+                msg = (
+                    f"{side.upper()} side paused for the day: "
+                    f"daily_pnl={pnl} limit=-{limit}"
+                )
+                await alerter.trade_exited("SYSTEM", "side_paused", 0, msg)
+            elif kind == "side_wr_alert":
+                side = payload.get("side", "?")
+                wr = payload.get("win_rate", 0.0) * 100
+                window = payload.get("window", "?")
+                threshold = payload.get("threshold", 0.0) * 100
+                msg = (
+                    f"{side.upper()} win-rate degraded: "
+                    f"{wr:.0f}% over last {window} trades "
+                    f"(threshold {threshold:.0f}%)"
+                )
+                await alerter.trade_exited("SYSTEM", "wr_degraded", 0, msg)
+
+
 async def _check_settlements(
     client: KalshiClient,
     executor: Executor,
@@ -1318,7 +1353,7 @@ async def _check_settlements(
         if market.get("status") not in ("determined", "settled"):
             continue
         result = market.get("result", "")
-        executor.record_settlement(ticker, result)
+        risk_events = executor.record_settlement(ticker, result)
         if alerter:
             total_pnl = Decimal("0")
             for order in executor.settled_orders:
@@ -1326,6 +1361,7 @@ async def _check_settlements(
                     total_pnl += order.pnl
             won = total_pnl > 0
             await alerter.trade_settled(ticker, won, total_pnl)
+            await _emit_risk_events(alerter, risk_events)
 
 
 async def _evaluate_exits(
@@ -1383,8 +1419,9 @@ async def _settle_paper_positions(
             continue
 
         result = "yes" if prev.went_up else "no"
-        executor.record_settlement(order.signal.ticker, result)
+        risk_events = executor.record_settlement(order.signal.ticker, result)
         if alerter:
+            await _emit_risk_events(alerter, risk_events)
             total_pnl = Decimal("0")
             for settled in executor.settled_orders:
                 if (
