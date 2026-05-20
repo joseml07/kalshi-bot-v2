@@ -155,6 +155,65 @@ tr:hover td { background:#131e36; }
 .pill { border:1px solid var(--line-soft); border-radius:999px; padding:4px 10px; font-size:.73rem; color:var(--muted); background:#111924; }
 
 .panel-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+
+/* Insights tab — side / symbol / cross-tab / exit-reason / hour / dow panels */
+.insight-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
+@media (max-width: 900px) { .insight-row { grid-template-columns:1fr; } }
+.insight-card { background:var(--panel); border:1px solid var(--line-soft); border-radius:14px; padding:0; overflow:hidden; }
+.insight-card h2 {
+  font-size:.84rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted);
+  padding:10px 12px; border-bottom:1px solid var(--line); background:var(--panel-2);
+}
+.insight-card .body { padding:12px; }
+.kvrow {
+  display:grid; grid-template-columns: 56px auto auto auto;
+  gap:8px 14px; align-items:center;
+  padding:9px 11px; background:#101726; border:1px solid var(--line-soft);
+  border-radius:10px; margin-bottom:8px;
+  font-size:.86rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.kvrow .label { font-weight:700; color:var(--txt); }
+.kvrow .sub { color:var(--muted); font-size:.78rem; }
+.kvrow .pnl { text-align:right; font-weight:700; }
+.matrix {
+  display:grid; gap:6px;
+  font-size:.82rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.matrix-cell {
+  padding:8px 10px; background:#101726; border:1px solid var(--line-soft);
+  border-radius:10px; text-align:right; font-variant-numeric: tabular-nums;
+}
+.matrix-cell.head { background:transparent; border:none; color:var(--muted);
+  font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; text-align:center; }
+.matrix-cell.rowhead { background:transparent; border:none; text-align:left;
+  font-weight:700; padding-left:0; }
+.matrix-cell .sub { display:block; color:var(--muted); font-size:.72rem; margin-top:2px; }
+.bar-row {
+  display:grid; grid-template-columns: 90px 1fr 100px; gap:8px;
+  align-items:center; padding:5px 0; font-size:.8rem;
+  font-variant-numeric: tabular-nums;
+}
+.bar-track { background:#101726; height:18px; border-radius:6px; overflow:hidden; }
+.bar-fill { height:100%; background: linear-gradient(90deg, var(--blue), #6db8ff); }
+.bar-fill.bad { background: linear-gradient(90deg, var(--red), #ff7a73); }
+.bar-fill.good { background: linear-gradient(90deg, var(--green), #66d97c); }
+
+/* Compact side-performance card pinned to the Live tab */
+.side-quick {
+  display:grid; grid-template-columns: repeat(2, 1fr); gap:10px;
+  margin-top:10px;
+}
+.side-quick .card-mini {
+  background:#101726; border:1px solid var(--line-soft); border-radius:12px; padding:12px;
+}
+.side-quick .card-mini .label {
+  color:var(--muted); font-size:.72rem; text-transform:uppercase; letter-spacing:.08em;
+}
+.side-quick .card-mini .big {
+  margin-top:4px; font-size:1.4rem; font-weight:700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.side-quick .card-mini .meta { color:var(--muted); font-size:.78rem; margin-top:2px; }
 pre.code {
   background:#0b1220; border:1px solid var(--line); border-radius:10px; padding:10px;
   white-space:pre-wrap; font-size:.78rem; color:#cdd8fb;
@@ -198,6 +257,7 @@ pre.code {
   <div class="tabs">
     <button class="tabbtn active" data-tab="live">Live</button>
     <button class="tabbtn" data-tab="performance">Performance</button>
+    <button class="tabbtn" data-tab="insights">Insights</button>
     <button class="tabbtn" data-tab="trades">Trades</button>
     <button class="tabbtn" data-tab="analysis">Analysis</button>
     <button class="tabbtn" data-tab="risk">Risk</button>
@@ -213,6 +273,10 @@ pre.code {
 
   <section id="tab-live" class="tab active">
     <div class="grid" id="kpiCards"></div>
+    <section class="section">
+      <h2>Side performance <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-weight:normal;font-size:.74rem;margin-left:6px">(yes vs no — surfaces regime asymmetry early)</span></h2>
+      <div class="body"><div id="sideQuick" class="side-quick"><div class="footer-note">Awaiting trade data…</div></div></div>
+    </section>
     <section class="section">
       <h2>Strategy state</h2>
       <div class="body"><div id="strategyStrip" class="strategy-strip"><div class="footer-note">Awaiting strategy state…</div></div></div>
@@ -249,6 +313,52 @@ pre.code {
         <h2>Per-symbol P&amp;L</h2>
         <div class="body"><div class="chart-shell chart-wrap"><canvas id="symbolChart"></canvas></div></div>
       </section>
+    </div>
+  </section>
+
+  <section id="tab-insights" class="tab">
+    <div class="insight-row">
+      <div class="insight-card">
+        <h2>Side breakdown</h2>
+        <div class="body"><div id="insightSide"></div></div>
+      </div>
+      <div class="insight-card">
+        <h2>Symbol breakdown</h2>
+        <div class="body"><div id="insightSymbol"></div></div>
+      </div>
+    </div>
+
+    <div class="insight-row">
+      <div class="insight-card">
+        <h2>Side × Symbol matrix</h2>
+        <div class="body"><div id="insightMatrix"></div></div>
+      </div>
+      <div class="insight-card">
+        <h2>Exit reasons</h2>
+        <div class="body"><div id="insightExits"></div></div>
+      </div>
+    </div>
+
+    <div class="insight-row">
+      <div class="insight-card">
+        <h2>PnL by hour-of-day <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-weight:normal;font-size:.74rem;margin-left:6px">(ET)</span></h2>
+        <div class="body"><div class="chart-shell chart-wrap"><canvas id="hodChart"></canvas></div></div>
+      </div>
+      <div class="insight-card">
+        <h2>PnL by day-of-week</h2>
+        <div class="body"><div class="chart-shell chart-wrap"><canvas id="dowChart"></canvas></div></div>
+      </div>
+    </div>
+
+    <div class="insight-row">
+      <div class="insight-card">
+        <h2>Drawdown <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-weight:normal;font-size:.74rem;margin-left:6px">(underwater curve)</span></h2>
+        <div class="body"><div class="chart-shell chart-wrap"><canvas id="ddChart"></canvas></div></div>
+      </div>
+      <div class="insight-card">
+        <h2>Rolling win rate <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-weight:normal;font-size:.74rem;margin-left:6px">(window: 20 trades)</span></h2>
+        <div class="body"><div class="chart-shell chart-wrap"><canvas id="rwrChart"></canvas></div></div>
+      </div>
     </div>
   </section>
 
@@ -650,6 +760,288 @@ function renderSymbolChart(symbolStats){
   });
 }
 
+// ---- Insights tab rendering ----
+//
+// All Insights renderers consume the /api/breakdowns payload. They live next
+// to renderSymbolChart so the chart wiring stays grouped. Keeping logic
+// client-side (vs more SQL) means we get tz-correct ET buckets and
+// drawdown/rolling-wr math without adding GROUP BY complexity.
+
+const SIDE_COLORS = { yes: '#58a6ff', no: '#3fb950' };
+
+function fmtPct(n) { return (Number(n||0) * 100).toFixed(0) + '%'; }
+
+function renderSideQuick(bySide) {
+  // Compact panel pinned to the Live tab. Two cards, yes vs no, with the
+  // numbers that matter most for catching a regime shift: WR and net PnL.
+  const el = document.getElementById('sideQuick');
+  if (!el) return;
+  if (!bySide.length) { el.innerHTML = '<div class="footer-note">No trades in this view yet.</div>'; return; }
+  const order = ['yes', 'no'];
+  el.innerHTML = order.map(side => {
+    const g = bySide.find(r => r.side === side);
+    if (!g) {
+      return `<div class="card-mini"><div class="label">${side.toUpperCase()}</div>
+        <div class="big" style="color:var(--muted)">—</div>
+        <div class="meta">no trades</div></div>`;
+    }
+    const wr = g.n ? g.wins / g.n : 0;
+    const pnlCls = Number(g.pnl) > 0 ? 'pos' : Number(g.pnl) < 0 ? 'neg' : '';
+    return `<div class="card-mini">
+      <div class="label">${side.toUpperCase()}</div>
+      <div class="big ${pnlCls}">${fmtMoney(g.pnl)}</div>
+      <div class="meta">${g.n} trades · ${g.wins}W / ${g.losses}L · WR ${fmtPct(wr)}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderInsightSide(bySide) {
+  // Side breakdown panel on the Insights tab — same data as the live card
+  // but presented as a horizontal kv row (consistent with the matrix block
+  // below it).
+  const el = document.getElementById('insightSide');
+  if (!el) return;
+  if (!bySide.length) { el.innerHTML = '<div class="footer-note">No trades.</div>'; return; }
+  el.innerHTML = bySide.map(g => {
+    const wr = g.n ? g.wins / g.n : 0;
+    return `<div class="kvrow">
+      <span class="label">${(g.side || '?').toUpperCase()}</span>
+      <span class="sub">${g.n} trades</span>
+      <span class="sub">WR ${fmtPct(wr)}</span>
+      <span class="pnl ${clsByVal(g.pnl)}">${fmtMoney(g.pnl)}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderInsightSymbol(bySymbol) {
+  // Per-symbol breakdown. Sort by pnl descending so the best symbol pops
+  // to the top of the list.
+  const el = document.getElementById('insightSymbol');
+  if (!el) return;
+  if (!bySymbol.length) { el.innerHTML = '<div class="footer-note">No trades.</div>'; return; }
+  const sorted = [...bySymbol].sort((a, b) => Number(b.pnl||0) - Number(a.pnl||0));
+  el.innerHTML = sorted.map(g => {
+    const wr = g.n ? g.wins / g.n : 0;
+    return `<div class="kvrow">
+      <span class="label">${g.symbol}</span>
+      <span class="sub">${g.n} trades</span>
+      <span class="sub">WR ${fmtPct(wr)}</span>
+      <span class="pnl ${clsByVal(g.pnl)}">${fmtMoney(g.pnl)}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderInsightMatrix(bySideSymbol) {
+  // 2×N matrix (yes/no rows × BTC/ETH/SOL cols). This is the killer panel —
+  // it's what would have made the live YES weakness obvious as a regime
+  // pattern rather than a noisy per-trade story.
+  const el = document.getElementById('insightMatrix');
+  if (!el) return;
+  if (!bySideSymbol.length) { el.innerHTML = '<div class="footer-note">No trades.</div>'; return; }
+  const symbols = [...new Set(bySideSymbol.map(r => r.symbol))].sort();
+  const key = (s, sym) => bySideSymbol.find(r => r.side === s && r.symbol === sym);
+  let html = `<div class="matrix" style="grid-template-columns: 64px ${symbols.map(() => '1fr').join(' ')};">`;
+  html += '<div class="matrix-cell head"></div>';
+  for (const s of symbols) html += `<div class="matrix-cell head">${s}</div>`;
+  for (const side of ['yes', 'no']) {
+    html += `<div class="matrix-cell rowhead">${side.toUpperCase()}</div>`;
+    for (const sym of symbols) {
+      const g = key(side, sym);
+      if (!g) { html += '<div class="matrix-cell" style="color:var(--muted)">—</div>'; continue; }
+      const wr = g.n ? g.wins / g.n : 0;
+      html += `<div class="matrix-cell">
+        <span class="${clsByVal(g.pnl)}">${fmtMoney(g.pnl)}</span>
+        <span class="sub">${g.n} · WR ${fmtPct(wr)}</span>
+      </div>`;
+    }
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderInsightExits(byExit) {
+  // Horizontal bars proportional to trade count. Color is tied to net pnl
+  // for that bucket so a glance tells you whether the exit reason makes
+  // money or loses money on average.
+  const el = document.getElementById('insightExits');
+  if (!el) return;
+  if (!byExit.length) { el.innerHTML = '<div class="footer-note">No trades.</div>'; return; }
+  const total = byExit.reduce((s, r) => s + Number(r.n||0), 0) || 1;
+  const sorted = [...byExit].sort((a, b) => Number(b.n||0) - Number(a.n||0));
+  el.innerHTML = sorted.map(g => {
+    const pct = (Number(g.n||0) / total) * 100;
+    const wr = g.n ? g.wins / g.n : 0;
+    const cls = Number(g.pnl) > 0 ? 'good' : Number(g.pnl) < 0 ? 'bad' : '';
+    return `<div class="bar-row">
+      <span>${g.exit_reason}</span>
+      <div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>
+      <span style="text-align:right;color:var(--muted)">${g.n} · WR ${fmtPct(wr)}</span>
+    </div>`;
+  }).join('');
+}
+
+// ---- Time-bucketed Chart.js charts ----
+//
+// All four (hour-of-day, day-of-week, drawdown, rolling WR) consume the
+// time_series array of {timestamp, pnl} rows from /api/breakdowns. They
+// bucket / accumulate client-side so SQLite doesn't need to deal with
+// timezone conversion (it can't, cleanly).
+
+function _parseTradeTs(s) {
+  // Same shape as parseUtcTs but pinned in one helper to keep the renderers tidy.
+  return parseUtcTs(s);
+}
+
+function renderHourOfDayChart(series) {
+  // 24 ET-local hour buckets. Positive bars green, negative red, so the
+  // distribution by hour reads in two passes (count via height, sign via color).
+  const buckets = new Array(24).fill(0);
+  for (const r of series) {
+    const d = _parseTradeTs(r.timestamp);
+    if (!d) continue;
+    // ET hour. Intl.DateTimeFormat is the only stdlib way to get a tz-correct hour.
+    const hStr = new Intl.DateTimeFormat('en-US', {
+      timeZone: TZ, hour12: false, hour: '2-digit'
+    }).format(d);
+    const h = (parseInt(hStr, 10) % 24);
+    buckets[h] += Number(r.pnl || 0);
+  }
+  const colors = buckets.map(v => v >= 0 ? '#3fb950' : '#f85149');
+  ensureChart('hodChart', {
+    type: 'bar',
+    data: {
+      labels: buckets.map((_, i) => String(i).padStart(2, '0')),
+      datasets: [{ label: 'Net PnL ($)', data: buckets, backgroundColor: colors }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => fmtMoney(ctx.parsed.y) } } },
+      scales: { y: { ticks: { color: '#9ba7b9' } }, x: { ticks: { color: '#9ba7b9' } } },
+    }
+  });
+}
+
+function renderDayOfWeekChart(series) {
+  // 7 ET-local day buckets. Same colorization rule as hour-of-day.
+  const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const buckets = new Array(7).fill(0);
+  for (const r of series) {
+    const d = _parseTradeTs(r.timestamp);
+    if (!d) continue;
+    const dowStr = new Intl.DateTimeFormat('en-US', {
+      timeZone: TZ, weekday: 'short'
+    }).format(d);
+    const idx = names.indexOf(dowStr);
+    if (idx >= 0) buckets[idx] += Number(r.pnl || 0);
+  }
+  const colors = buckets.map(v => v >= 0 ? '#3fb950' : '#f85149');
+  ensureChart('dowChart', {
+    type: 'bar',
+    data: {
+      labels: names,
+      datasets: [{ label: 'Net PnL ($)', data: buckets, backgroundColor: colors }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => fmtMoney(ctx.parsed.y) } } },
+      scales: { y: { ticks: { color: '#9ba7b9' } }, x: { ticks: { color: '#9ba7b9' } } },
+    }
+  });
+}
+
+function renderDrawdownChart(series) {
+  // Underwater curve: for each settled trade in order, plot (cum_pnl - high_water).
+  // Always <= 0; the deeper the dip, the worse the equity slipped from its peak.
+  // A flat-zero line means the bot has only made new highs (rare).
+  if (!series.length) {
+    ensureChart('ddChart', { type: 'line', data: { labels: [], datasets: [] },
+      options: { responsive: true, maintainAspectRatio: false } });
+    return;
+  }
+  const sorted = [...series].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+  let cum = 0, peak = 0;
+  const under = sorted.map(r => {
+    cum += Number(r.pnl || 0);
+    if (cum > peak) peak = cum;
+    return cum - peak;
+  });
+  ensureChart('ddChart', {
+    type: 'line',
+    data: {
+      labels: sorted.map((_, i) => String(i + 1)),
+      datasets: [{
+        label: 'Drawdown ($)',
+        data: under,
+        borderColor: '#f85149',
+        backgroundColor: 'rgba(248,81,73,0.20)',
+        fill: true,
+        pointRadius: 0,
+        tension: 0.15,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => fmtMoney(ctx.parsed.y) } } },
+      scales: {
+        y: { ticks: { color: '#9ba7b9', callback: v => '$' + Number(v).toFixed(0) }, suggestedMax: 0 },
+        x: { ticks: { color: '#9ba7b9', maxTicksLimit: 8 } },
+      },
+    }
+  });
+}
+
+function renderRollingWrChart(series) {
+  // Rolling 20-trade WR with the 50% baseline marked. Catches degradation
+  // earlier than the cumulative-WR pill ever could because the most recent
+  // 20 trades dominate the metric, not the lifetime average.
+  const W = 20;
+  if (series.length < W) {
+    ensureChart('rwrChart', { type: 'line', data: { labels: [], datasets: [] },
+      options: { responsive: true, maintainAspectRatio: false } });
+    return;
+  }
+  const sorted = [...series].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+  const out = [];
+  for (let i = W; i <= sorted.length; i++) {
+    const slice = sorted.slice(i - W, i);
+    const wins = slice.filter(r => Number(r.pnl || 0) > 0).length;
+    out.push(wins / W);
+  }
+  const labels = out.map((_, i) => String(i + W));
+  ensureChart('rwrChart', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Rolling WR',
+        data: out,
+        borderColor: '#58a6ff',
+        backgroundColor: 'rgba(88,166,255,0.15)',
+        fill: false,
+        pointRadius: 0,
+        tension: 0.15,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => fmtPct(ctx.parsed.y) } },
+        // 50% baseline drawn manually via annotation-less line plugin: a flat
+        // dataset overlaid would need scale tweaks, so we let users eyeball
+        // against the y-tick at 0.5 instead — labeled below.
+      },
+      scales: {
+        y: {
+          min: 0, max: 1,
+          ticks: { color: '#9ba7b9', callback: v => fmtPct(v) },
+        },
+        x: { ticks: { color: '#9ba7b9', maxTicksLimit: 8 } },
+      },
+    }
+  });
+}
+
 function renderDailyGauge(totalPnl){
   const limit = 20;
   const used = Math.min(100, Math.max(0, (Math.abs(Number(totalPnl||0))/limit)*100));
@@ -718,7 +1110,7 @@ function renderAnalyses(rows){
 
 async function loadStatic(){
   const q=viewAll?'?all=true':'';
-  const [summary,stats,pnl,routes,trades,signals,analyses,symbols,health,balance,settings,killState] = await Promise.all([
+  const [summary,stats,pnl,routes,trades,signals,analyses,symbols,health,balance,settings,killState,breakdowns] = await Promise.all([
     fetch('/api/summary'+q).then(r=>r.json()),
     fetch('/api/stats'+q).then(r=>r.json()),
     fetch('/api/pnl_rolling'+q).then(r=>r.json()),
@@ -731,6 +1123,7 @@ async function loadStatic(){
     fetch('/api/balance').then(r=>r.json()).catch(()=>({})),
     fetch('/api/settings').then(r=>r.json()).catch(()=>({settings:{},allowed_keys:[]})),
     fetch('/api/kill_switch').then(r=>r.json()).catch(()=>({kill_switch_active:false})),
+    fetch('/api/breakdowns'+q).then(r=>r.json()).catch(()=>null),
   ]);
 
   renderKpis(summary,stats,balance);
@@ -745,6 +1138,18 @@ async function loadStatic(){
   renderSkipReasons((health||{}).runtime||{});
   renderSettings(settings);
   renderKillState(killState);
+  if (breakdowns) {
+    // Live tab side-performance card + Insights tab content all from one payload
+    renderSideQuick(breakdowns.by_side || []);
+    renderInsightSide(breakdowns.by_side || []);
+    renderInsightSymbol(breakdowns.by_symbol || []);
+    renderInsightMatrix(breakdowns.by_side_symbol || []);
+    renderInsightExits(breakdowns.by_exit_reason || []);
+    renderHourOfDayChart(breakdowns.time_series || []);
+    renderDayOfWeekChart(breakdowns.time_series || []);
+    renderDrawdownChart(breakdowns.time_series || []);
+    renderRollingWrChart(breakdowns.time_series || []);
+  }
 }
 
 function renderKillState(ks){
