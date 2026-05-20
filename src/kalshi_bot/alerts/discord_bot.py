@@ -387,12 +387,12 @@ def make_status_command(
 ) -> CommandBuilder:
     async def handler() -> str:
         if settings.trading_mode == "paper":
-            balance = Decimal(str(settings.paper_balance))
+            balance: Any = f"{settings.paper_balance:.2f}"
         else:
             try:
                 balance = await client.get_balance()
             except Exception:
-                balance = Decimal("?")
+                balance = "?"
         kill = "YES" if Path("KILL_SWITCH").exists() else "no"
         return (
             f"**Bot Status**\n"
@@ -419,7 +419,7 @@ def make_pnl_command(risk_manager: Any) -> CommandBuilder:
 def make_balance_command(client: Any, settings: Any) -> CommandBuilder:
     async def handler() -> str:
         if settings.trading_mode == "paper":
-            return f"**Balance**\n${Decimal(str(settings.paper_balance))}"
+            return f"**Balance**\n${settings.paper_balance:.2f}"
         try:
             balance = await client.get_balance()
             return f"**Balance**\n${balance}"

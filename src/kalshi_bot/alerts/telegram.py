@@ -280,12 +280,12 @@ class TelegramAlerter:
 def make_status_command(risk_manager: Any, executor: Any, client: Any, settings: Any) -> CommandHandler:
     async def handler() -> str:
         if settings.trading_mode == "paper":
-            balance = Decimal(str(settings.paper_balance))
+            balance: Any = f"{settings.paper_balance:.2f}"
         else:
             try:
                 balance = await client.get_balance()
             except Exception:
-                balance = Decimal("?")
+                balance = "?"
         mode = settings.trading_mode
         env = settings.kalshi_env
         kill = "YES" if Path("KILL_SWITCH").exists() else "no"
@@ -314,7 +314,7 @@ def make_pnl_command(risk_manager: Any) -> CommandHandler:
 def make_balance_command(client: Any, settings: Any) -> CommandHandler:
     async def handler() -> str:
         if settings.trading_mode == "paper":
-            return f"<b>Balance</b>\n${Decimal(str(settings.paper_balance))}"
+            return f"<b>Balance</b>\n${settings.paper_balance:.2f}"
         try:
             balance = await client.get_balance()
             return f"<b>Balance</b>\n${balance}"

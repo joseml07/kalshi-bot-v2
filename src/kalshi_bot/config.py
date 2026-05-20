@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     lwm_yes_only: bool = Field(default=False)
     lwm_no_side_edge_bonus: float = Field(default=0.04)
 
+    # Side gating — disable YES side execution (still logs what-if signals)
+    yes_side_disabled: bool = Field(default=False)
+
     # Maker-first execution
     maker_first: bool = Field(default=True)
     maker_fill_horizon_s: int = Field(default=90)

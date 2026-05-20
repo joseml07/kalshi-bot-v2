@@ -24,6 +24,7 @@ _SETTABLE: dict[str, tuple[str, type]] = {
     "daily_loss_limit": ("daily_loss_limit", float),
     "max_concurrent_positions": ("max_concurrent_positions", int),
     "paper_balance": ("paper_balance", float),
+    "yes_side_disabled": ("yes_side_disabled", bool),
 }
 
 

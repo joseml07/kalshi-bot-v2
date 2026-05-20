@@ -64,7 +64,7 @@ tests/                   — pytest suite, run with: PYTHONPATH=src pytest tests
 
 ### Entry Logic
 - Compute 60-second momentum from Coinbase price ticks
-- Compute orderbook imbalance: `yes_depth - no_depth`
+- Compute orderbook imbalance: `(yes_depth - no_depth) / total_depth` (normalized to [-1, 1])
 - Trade ONLY when `sign(momentum) == sign(imbalance)` (agreement = confirmation)
 - Positive momentum + positive OBI -> buy YES
 - Negative momentum + negative OBI -> buy NO

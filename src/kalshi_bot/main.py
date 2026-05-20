@@ -794,6 +794,27 @@ async def _fast_eval_loop(
                         _record_reason(symbol, ticker, "skip_risk")
                         continue
 
+                    # YES side gating: log what-if but don't execute
+                    if (
+                        settings.yes_side_disabled
+                        and signal.side.value == "yes"
+                    ):
+                        executor.log_signal(
+                            signal, "whatif_yes_disabled",
+                            f"edge={signal.net_edge} price={signal.kalshi_price}",
+                        )
+                        _bump_counter(signal_counters, "whatif_yes")
+                        _record_reason(symbol, ticker, "whatif_yes_disabled")
+                        logger.info(
+                            "whatif_yes_disabled",
+                            ticker=ticker,
+                            side="yes",
+                            edge=str(signal.net_edge),
+                            price=str(signal.kalshi_price),
+                            secs=signal.seconds_remaining,
+                        )
+                        continue
+
                     result = await executor.submit(signal, cached.balance)
                     if result is not None:
                         _bump_counter(signal_counters, "trade")
@@ -1397,11 +1418,12 @@ async def _evaluate_exits(
 
         if should_exit:
             logger.info("exit_signal", ticker=ticker, reason=reason)
-            exited = await executor.exit_position(order, current_value, exit_reason=reason.split(":", 1)[0])
+            exited, risk_events = await executor.exit_position(order, current_value, exit_reason=reason.split(":", 1)[0])
             if exited and alerter is not None:
                 await alerter.trade_exited(
                     ticker, order.signal.side.value, order.contracts, reason
                 )
+                await _emit_risk_events(alerter, risk_events)
 
 
 async def _settle_paper_positions(

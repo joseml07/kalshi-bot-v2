@@ -453,11 +453,16 @@ class Executor:
                         continue
                     logger.exception("Taker promotion failed for %s", oid)
                     self._risk.record_settlement(order.signal.ticker, Decimal("0"))
+                    self._update_trade_pnl(oid, Decimal("0"))
                     failed.append(order)
         return failed
 
     def _get_available_depth(self, order: TrackedOrder) -> int | None:
-        """Return available contracts on the desired side of the orderbook."""
+        """Return available contracts on the ask side for the desired direction.
+
+        YES taker buys lift YES asks, which are synthetic: best_yes_ask = 1 - max(no_bid).
+        So YES ask liquidity lives in no_levels, and vice versa.
+        """
         if self._get_orderbook is None:
             return None
         snapshot = self._get_orderbook(order.signal.ticker)
@@ -465,9 +470,9 @@ class Executor:
             return None
         fresh_book, _ = snapshot
         if order.signal.side.value == "yes":
-            return sum(lv.quantity for lv in fresh_book.yes_levels)
-        else:
             return sum(lv.quantity for lv in fresh_book.no_levels)
+        else:
+            return sum(lv.quantity for lv in fresh_book.yes_levels)
 
     def _fresh_taker_price(self, order: TrackedOrder) -> Decimal | None:
         """Compute the current taker price from the cached orderbook.
@@ -584,10 +589,14 @@ class Executor:
         order: TrackedOrder,
         current_market_price: Decimal = Decimal("0"),
         exit_reason: str | None = None,
-    ) -> bool:
-        """Sell to exit a filled position."""
+    ) -> tuple[bool, list[dict[str, Any]]]:
+        """Sell to exit a filled position.
+
+        Returns (exited, risk_events) so callers can forward side_paused /
+        side_wr_alert events to the alerter — mirroring record_settlement.
+        """
         if order.state != OrderState.FILLED:
-            return False
+            return False, []
 
         sell_price = current_market_price if current_market_price > 0 else Decimal("0")
         pnl_per_contract = sell_price - order.price
@@ -601,6 +610,7 @@ class Executor:
         exit_pnl = raw_pnl - total_fees
 
         sell_order_price = sell_price
+        events: list[dict[str, Any]] = []
 
         if self._dry_run:
             logger.info(
@@ -614,9 +624,11 @@ class Executor:
             )
             order.pnl = exit_pnl
             order.state = OrderState.CANCELLED
-            self._risk.record_settlement(order.signal.ticker, exit_pnl, side=order.signal.side.value)
+            evs = self._risk.record_settlement(order.signal.ticker, exit_pnl, side=order.signal.side.value)
+            if evs:
+                events.append(evs)
             self._update_trade_pnl(order.order_id, exit_pnl, total_fees, exit_reason)
-            return True
+            return True, events
 
         try:
             await self._client.place_order(
@@ -628,7 +640,9 @@ class Executor:
             )
             order.pnl = exit_pnl
             order.state = OrderState.CANCELLED
-            self._risk.record_settlement(order.signal.ticker, exit_pnl, side=order.signal.side.value)
+            evs = self._risk.record_settlement(order.signal.ticker, exit_pnl, side=order.signal.side.value)
+            if evs:
+                events.append(evs)
             self._update_trade_pnl(order.order_id, exit_pnl, total_fees, exit_reason)
             logger.info(
                 "Exit sell placed: %s %s x%d est_pnl=%s fees=%s",
@@ -638,10 +652,10 @@ class Executor:
                 exit_pnl,
                 total_fees,
             )
-            return True
+            return True, events
         except Exception:
             logger.exception("exit_sell_failed", extra={"ticker": order.signal.ticker})
-            return False
+            return False, []
 
     def mark_filled(self, order_id: str) -> None:
         """Mark an order as filled (called when polling confirms fill)."""

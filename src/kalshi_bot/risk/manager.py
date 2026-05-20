@@ -128,8 +128,11 @@ class RiskManager:
                 )
 
             # Rolling-WR degradation alert.
+            # pnl == 0 is a cancel/abort sentinel (order never filled); skip it
+            # so executor plumbing doesn't register as losing trades.
             buf = self._recent_wins_yes if side_key == "yes" else self._recent_wins_no
-            buf.append(pnl > 0)
+            if pnl != 0:
+                buf.append(pnl > 0)
             if (
                 self._wr_alerts_enabled
                 and len(buf) >= self._wr_window
