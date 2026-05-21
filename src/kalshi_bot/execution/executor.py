@@ -161,8 +161,8 @@ class Executor:
                      AND timestamp < datetime('now', '-30 minutes')""",
             ).rowcount
         if updated:
-            self._db.commit()
             logger.info("reconcile_orphans cleaned=%d stale trades", updated)
+        self._db.commit()
 
     async def submit(self, signal: Signal, bankroll: Decimal) -> TrackedOrder | None:
         """Size, place, and track an order for the given signal.
