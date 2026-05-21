@@ -283,7 +283,7 @@ async def test_exit_position_live_transitions_to_exiting(tmp_path: Path) -> None
     assert exited is True
     assert order.state == OrderState.EXITING
     assert order.exit_order_id is not None
-    assert order.exit_price == Decimal("0.60")
+    assert order.exit_price == Decimal("0.59")  # 0.60 - 0.01 EXIT_SELL_BUFFER
     # PnL should NOT be finalized yet
     assert order.pnl is None
     # Ticker should still be in active_tickers (EXITING is active)

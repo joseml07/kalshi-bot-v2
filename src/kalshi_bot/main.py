@@ -888,10 +888,16 @@ async def _slow_housekeeping_loop(
     analyzed_windows: set[tuple[str, str]] = set()
     stale_alert_state: dict[str, bool] = {}
     last_heartbeat_mono: float = 0.0
+    last_orphan_check_mono: float = 0.0
+    ORPHAN_CHECK_INTERVAL_S = 1800.0  # 30 minutes
 
     while not shutdown.is_set():
         try:
             await executor.check_pending_fills()
+            now_mono = time.monotonic()
+            if now_mono - last_orphan_check_mono > ORPHAN_CHECK_INTERVAL_S:
+                executor._reconcile_orphans()
+                last_orphan_check_mono = now_mono
             promotion_failures = await executor.promote_to_taker()
             stale_cancels = await executor.cancel_stale()
             if alerter is not None:

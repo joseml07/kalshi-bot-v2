@@ -37,6 +37,7 @@ PROMOTE_BIG_PRICE_MOVE = 0.03
 
 # Taker execution improvements
 TAKER_SLIPPAGE_BUFFER = Decimal("0.02")  # pay up to 2c worse to guarantee fill
+EXIT_SELL_BUFFER = Decimal("0.01")       # sell 1c below bid to guarantee exit fill
 MIN_PROMOTE_DEPTH = 15                   # contracts visible before taker promo
 TAKER_FILL_HORIZON_S = 120               # longer timeout for taker orders
 MAX_PROMOTE_RETRIES = 1
@@ -132,19 +133,33 @@ class Executor:
         self._get_orderbook = fn
 
     def _reconcile_orphans(self) -> None:
-        """Mark old trades with pnl=NULL as cancelled on startup.
+        """Mark old trades with pnl=NULL as orphans.
 
-        After a restart the in-memory _orders dict is empty. Any trades in
-        the DB with pnl IS NULL AND fees IS NULL older than 30 minutes are
-        orphans whose markets have long since settled. Mark them pnl='0' so
-        the dashboard no longer shows them as open positions.
+        Any trades in the DB with pnl IS NULL AND fees IS NULL older than
+        30 minutes whose order_id is NOT in the live _orders dict are
+        orphans whose markets have long since settled. Mark them pnl='0'
+        so the dashboard no longer shows them as open positions.
+
+        Safe to call both at startup (empty _orders) and mid-session
+        (skips orders the executor is still actively tracking).
         """
-        updated = self._db.execute(
-            """UPDATE trades
-               SET pnl = '0', exit_reason = 'orphan_reconciled'
-               WHERE pnl IS NULL AND fees IS NULL
-                 AND timestamp < datetime('now', '-30 minutes')""",
-        ).rowcount
+        # Exclude order_ids that are still tracked in memory
+        active_oids = set(self._orders.keys())
+        if active_oids:
+            placeholders = ",".join("?" for _ in active_oids)
+            sql = f"""UPDATE trades
+                      SET pnl = '0', exit_reason = 'orphan_reconciled'
+                      WHERE pnl IS NULL AND fees IS NULL
+                        AND timestamp < datetime('now', '-30 minutes')
+                        AND order_id NOT IN ({placeholders})"""  # noqa: S608
+            updated = self._db.execute(sql, tuple(active_oids)).rowcount
+        else:
+            updated = self._db.execute(
+                """UPDATE trades
+                   SET pnl = '0', exit_reason = 'orphan_reconciled'
+                   WHERE pnl IS NULL AND fees IS NULL
+                     AND timestamp < datetime('now', '-30 minutes')""",
+            ).rowcount
         if updated:
             self._db.commit()
             logger.info("reconcile_orphans cleaned=%d stale trades", updated)
@@ -693,7 +708,10 @@ class Executor:
         total_fees = entry_fee + exit_fee
         exit_pnl = raw_pnl - total_fees
 
-        sell_order_price = sell_price
+        # Live exit: sell 1c below bid to guarantee fill near settlement.
+        # Limit sells fill at best available, so this only costs a penny if
+        # the top bid level gets pulled between our read and order placement.
+        sell_order_price = max(Decimal("0.01"), sell_price - EXIT_SELL_BUFFER)
         events: list[dict[str, Any]] = []
 
         if self._dry_run:
