@@ -764,6 +764,20 @@ def download_full_json() -> StreamingResponse:
     )
 
 
+@app.get("/download/explanation.md")
+def download_explanation() -> StreamingResponse:
+    """Download the edge analysis report as Markdown."""
+    md_path = Path(__file__).parent / "explanation.md"
+    if not md_path.exists():
+        raise HTTPException(status_code=404, detail="explanation.md not found")
+    content = md_path.read_text(encoding="utf-8")
+    return StreamingResponse(
+        io.StringIO(content),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=explanation.md"},
+    )
+
+
 @app.get("/api/live")
 async def api_live() -> StreamingResponse:
     live_path = Path("live_state.json")
