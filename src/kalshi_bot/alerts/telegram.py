@@ -94,13 +94,15 @@ class TelegramAlerter:
 
         message = update.get("message")
         if not message:
+            logger.info("telegram_update_no_message", update=update)
             return
 
         chat_id = str(message.get("chat", {}).get("id", ""))
+        text: str = message.get("text", "").strip()
+        logger.info("telegram_received_message", chat_id=chat_id, expected_chat_id=self._chat_id, text=text)
         if chat_id != self._chat_id:
             return
 
-        text: str = message.get("text", "").strip()
         if not text.startswith("/"):
             return
 
