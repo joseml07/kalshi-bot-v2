@@ -86,15 +86,13 @@ class TelegramAlerter:
     async def _get_updates(self) -> list[dict[str, Any]]:
         url = f"{TELEGRAM_API}/bot{self._bot_token}/getUpdates"
         try:
-            resp = await self._client.get(
-                url,
-                params={
-                    "offset": str(self._offset),
-                    "timeout": "0",
-                    "allowed_updates": json.dumps(self._allowed_updates),
-                },
-                timeout=40.0,
-            )
+            params = {
+                "offset": str(self._offset),
+                "timeout": "30",
+                "allowed_updates": json.dumps(self._allowed_updates),
+            }
+            async with httpx.AsyncClient(timeout=40.0) as client:
+                resp = await client.get(url, params=params)
             if resp.status_code != 200:
                 logger.warning(
                     "telegram_get_updates_failed",
@@ -107,6 +105,12 @@ class TelegramAlerter:
                 logger.warning("telegram_get_updates_not_ok", response=data)
                 return []
             results: list[dict[str, Any]] = data.get("result", [])
+            if results:
+                logger.info(
+                    "telegram_updates_received",
+                    count=len(results),
+                    max_update_id=results[-1].get("update_id"),
+                )
             return results
         except httpx.TimeoutException:
             return []
@@ -195,8 +199,8 @@ class TelegramAlerter:
         lines = ["<b>Available Commands</b>\n"]
         descriptions: dict[str, str] = {
             "status": "Bot status, balance, positions",
-            "pnl": "Daily P&L breakdown",
-            "stats": "All-time win rate, avg P&L, best/worst",
+            "pnl": "Daily P&amp;L breakdown",
+            "stats": "All-time win rate, avg P&amp;L, best/worst",
             "maker": "Maker routing and fill metrics",
             "signals": "Last 10 evaluated signals",
             "trades": "Last 10 trades",
@@ -212,7 +216,7 @@ class TelegramAlerter:
             "cleardata": "Wipe all trades and signals from database",
             "kill": "Activate kill switch (halt trading)",
             "resume": "Remove kill switch (resume trading)",
-            "calendar": "Monthly P\u0026L calendar: /calendar [YYYY MM]",
+            "calendar": "Monthly P&amp;L calendar: /calendar [YYYY MM]",
             "ip": "Show server IP and dashboard URL",
             "help": "Show this message",
         }
@@ -230,12 +234,7 @@ class TelegramAlerter:
         url = f"{TELEGRAM_API}/bot{self._bot_token}/sendMessage"
         try:
             payload = {"chat_id": self._chat_id, "text": text, "parse_mode": "HTML"}
-
-            def _post() -> httpx.Response:
-                with httpx.Client(timeout=10.0) as client:
-                    return client.post(url, json=payload)
-
-            resp = await asyncio.to_thread(_post)
+            resp = await self._client.post(url, json=payload)
             if resp.status_code != 200:
                 logger.warning("telegram_send_failed", status=resp.status_code, response=resp.text)
             else:
