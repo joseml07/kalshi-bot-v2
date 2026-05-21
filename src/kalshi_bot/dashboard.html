@@ -219,6 +219,50 @@ pre.code {
   white-space:pre-wrap; font-size:.78rem; color:#cdd8fb;
 }
 
+/* ── P&L Calendar ── */
+.cal-wrap { padding:12px; }
+.cal-nav { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.cal-nav button {
+  background:var(--panel-2); border:1px solid var(--line-soft); color:var(--muted);
+  border-radius:8px; padding:5px 12px; cursor:pointer; font-size:.82rem;
+}
+.cal-nav button:hover { color:var(--txt); border-color:var(--blue); }
+.cal-nav .cal-title { font-size:.92rem; font-weight:600; color:var(--txt); }
+.cal-grid {
+  display:grid; grid-template-columns:repeat(7,1fr); gap:4px;
+}
+.cal-hdr {
+  text-align:center; font-size:.68rem; color:var(--muted); text-transform:uppercase;
+  letter-spacing:.06em; padding:4px 0;
+}
+.cal-cell {
+  aspect-ratio:1.15; border-radius:8px; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; font-size:.72rem; position:relative;
+  border:1px solid transparent; transition: border-color .15s;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.cal-cell:hover { border-color:var(--line); }
+.cal-cell .cal-day { font-size:.64rem; color:var(--muted); margin-bottom:1px; }
+.cal-cell .cal-pnl { font-weight:700; font-size:.76rem; }
+.cal-cell.empty { background:transparent; }
+.cal-cell.no-trade { background:var(--panel-2); }
+.cal-cell.pos { background:rgba(63,185,80,0.15); }
+.cal-cell.pos .cal-pnl { color:#3fb950; }
+.cal-cell.pos-strong { background:rgba(63,185,80,0.28); }
+.cal-cell.pos-strong .cal-pnl { color:#56d364; }
+.cal-cell.neg { background:rgba(248,81,73,0.15); }
+.cal-cell.neg .cal-pnl { color:#f85149; }
+.cal-cell.neg-strong { background:rgba(248,81,73,0.28); }
+.cal-cell.neg-strong .cal-pnl { color:#ff8882; }
+.cal-cell .cal-meta { font-size:.58rem; color:var(--muted); margin-top:1px; }
+.cal-summary {
+  display:flex; justify-content:space-between; margin-top:10px; padding:8px 10px;
+  background:var(--panel-2); border-radius:8px; font-size:.78rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.cal-summary .cal-sum-label { color:var(--muted); }
+.cal-summary .cal-sum-val { font-weight:700; margin-left:6px; }
+
 .footer-note { color:var(--muted); font-size:.74rem; margin-top:10px; }
 .health-list { margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:6px; }
 .health-item { background:#0f1622; border:1px solid var(--line-soft); border-radius:8px; padding:6px 8px; font-size:.72rem; color:var(--muted); }
@@ -306,6 +350,19 @@ pre.code {
         </div>
       </section>
     </div>
+
+    <section class="section" style="margin-top:12px;">
+      <h2>Daily P&amp;L Calendar</h2>
+      <div class="cal-wrap" id="calendarWrap">
+        <div class="cal-nav">
+          <button onclick="calNav(-1)">&larr; Prev</button>
+          <span class="cal-title" id="calTitle">—</span>
+          <button onclick="calNav(1)">Next &rarr;</button>
+        </div>
+        <div class="cal-grid" id="calGrid"></div>
+        <div class="cal-summary" id="calSummary"></div>
+      </div>
+    </section>
 
     <div class="two-col" style="margin-top:12px;">
       <section class="section">
@@ -1045,6 +1102,108 @@ function renderRollingWrChart(series) {
   });
 }
 
+/* ── P&L Calendar ── */
+let _calData = {};   // { "2026-05-21": {pnl, trades, wins, losses} }
+let _calYear = 0;
+let _calMonth = 0;   // 0-indexed
+
+function renderCalendar(pnlHistory) {
+  _calData = {};
+  (pnlHistory || []).forEach(r => { _calData[r.day] = r; });
+  // Default to most recent month in data, or current month
+  const days = Object.keys(_calData).sort();
+  if (days.length) {
+    const last = new Date(days[days.length - 1] + 'T12:00:00');
+    _calYear = last.getFullYear();
+    _calMonth = last.getMonth();
+  } else {
+    const now = new Date();
+    _calYear = now.getFullYear();
+    _calMonth = now.getMonth();
+  }
+  _drawCal();
+}
+
+function calNav(delta) {
+  _calMonth += delta;
+  if (_calMonth > 11) { _calMonth = 0; _calYear++; }
+  if (_calMonth < 0) { _calMonth = 11; _calYear--; }
+  _drawCal();
+}
+
+function _drawCal() {
+  const grid = $('calGrid');
+  const title = $('calTitle');
+  const summary = $('calSummary');
+  if (!grid) return;
+
+  const months = ['January','February','March','April','May','June',
+                  'July','August','September','October','November','December'];
+  title.textContent = `${months[_calMonth]} ${_calYear}`;
+
+  // Find max absolute PnL this month for intensity scaling
+  const daysInMonth = new Date(_calYear, _calMonth + 1, 0).getDate();
+  let maxAbs = 0;
+  let monthPnl = 0, monthTrades = 0, monthWins = 0, monthDays = 0, greenDays = 0, redDays = 0;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = `${_calYear}-${String(_calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const r = _calData[key];
+    if (r) {
+      const ap = Math.abs(r.pnl);
+      if (ap > maxAbs) maxAbs = ap;
+      monthPnl += r.pnl;
+      monthTrades += r.trades;
+      monthWins += (r.wins || 0);
+      monthDays++;
+      if (r.pnl > 0) greenDays++;
+      else if (r.pnl < 0) redDays++;
+    }
+  }
+  if (maxAbs === 0) maxAbs = 1;
+  const strongThreshold = maxAbs * 0.5;
+
+  // Header row
+  let html = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+    .map(d => `<div class="cal-hdr">${d}</div>`).join('');
+
+  // Leading empty cells
+  const firstDow = new Date(_calYear, _calMonth, 1).getDay();
+  for (let i = 0; i < firstDow; i++) html += '<div class="cal-cell empty"></div>';
+
+  // Day cells
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = `${_calYear}-${String(_calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const r = _calData[key];
+    if (!r) {
+      html += `<div class="cal-cell no-trade"><span class="cal-day">${d}</span></div>`;
+    } else {
+      const abs = Math.abs(r.pnl);
+      let cls = 'no-trade';
+      if (r.pnl > 0) cls = abs >= strongThreshold ? 'pos-strong' : 'pos';
+      else if (r.pnl < 0) cls = abs >= strongThreshold ? 'neg-strong' : 'neg';
+      const sign = r.pnl >= 0 ? '+' : '';
+      html += `<div class="cal-cell ${cls}" title="${key}: ${sign}$${r.pnl.toFixed(2)} | ${r.trades} trades | ${r.wins||0}W/${r.losses||0}L">
+        <span class="cal-day">${d}</span>
+        <span class="cal-pnl">${sign}$${r.pnl.toFixed(0)}</span>
+        <span class="cal-meta">${r.trades}t ${r.wins||0}w</span>
+      </div>`;
+    }
+  }
+  grid.innerHTML = html;
+
+  // Monthly summary
+  const monthWr = monthTrades > 0 ? ((monthWins / monthTrades) * 100).toFixed(0) : '—';
+  const avgPerDay = monthDays > 0 ? (monthPnl / monthDays).toFixed(2) : '0.00';
+  const sign = monthPnl >= 0 ? '+' : '';
+  summary.innerHTML = `
+    <span><span class="cal-sum-label">Month:</span><span class="cal-sum-val ${monthPnl >= 0 ? 'pos' : 'neg'}">${sign}$${monthPnl.toFixed(2)}</span></span>
+    <span><span class="cal-sum-label">Days:</span><span class="cal-sum-val">${greenDays}g ${redDays}r</span></span>
+    <span><span class="cal-sum-label">Trades:</span><span class="cal-sum-val">${monthTrades}</span></span>
+    <span><span class="cal-sum-label">WR:</span><span class="cal-sum-val">${monthWr}%</span></span>
+    <span><span class="cal-sum-label">Avg/day:</span><span class="cal-sum-val ${Number(avgPerDay) >= 0 ? 'pos' : 'neg'}">${sign}$${avgPerDay}</span></span>
+  `;
+}
+
 function renderDailyGauge(totalPnl){
   const limit = 20;
   const used = Math.min(100, Math.max(0, (Math.abs(Number(totalPnl||0))/limit)*100));
@@ -1113,7 +1272,7 @@ function renderAnalyses(rows){
 
 async function loadStatic(){
   const q=viewAll?'?all=true':'';
-  const [summary,stats,pnl,routes,trades,signals,analyses,symbols,health,balance,settings,killState,breakdowns] = await Promise.all([
+  const [summary,stats,pnl,routes,trades,signals,analyses,symbols,health,balance,settings,killState,breakdowns,pnlHistory] = await Promise.all([
     fetch('/api/summary'+q).then(r=>r.json()),
     fetch('/api/stats'+q).then(r=>r.json()),
     fetch('/api/pnl_rolling'+q).then(r=>r.json()),
@@ -1127,6 +1286,7 @@ async function loadStatic(){
     fetch('/api/settings').then(r=>r.json()).catch(()=>({settings:{},allowed_keys:[]})),
     fetch('/api/kill_switch').then(r=>r.json()).catch(()=>({kill_switch_active:false})),
     fetch('/api/breakdowns'+q).then(r=>r.json()).catch(()=>null),
+    fetch('/api/pnl_history?all=true').then(r=>r.json()).catch(()=>[]),
   ]);
 
   renderKpis(summary,stats,balance);
@@ -1138,6 +1298,7 @@ async function loadStatic(){
   renderEdgeHistogram((trades||[]).filter(t=>t.pnl!=null));
   renderSymbolChart(symbols||[]);
   renderDailyGauge(summary.total_pnl||0);
+  renderCalendar(pnlHistory||[]);
   // Update trading mode + balance badges
   const mode = (summary.trading_mode||'unknown').toUpperCase();
   const modeEl = document.getElementById('modeText');

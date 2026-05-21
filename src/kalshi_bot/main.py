@@ -42,6 +42,7 @@ from kalshi_bot.alerts.telegram import (
     TelegramAlerter,
     make_analysis_command,
     make_balance_command,
+    make_calendar_command,
     make_cleardata_command,
     make_config_command,
     make_data_command,
@@ -394,6 +395,7 @@ def _register_commands(
     alerter.register("ip", make_ip_command())
     alerter.register_with_args("set", make_set_command(settings))
     alerter.register_with_args("reset", make_reset_command(risk))
+    alerter.register_with_args("calendar", make_calendar_command())
 
 
 def _register_discord_commands(

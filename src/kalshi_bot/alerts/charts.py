@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import calendar as _calendar
 import io
 import sqlite3
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import FancyBboxPatch
 
 
 @dataclass
@@ -202,3 +205,121 @@ def chart_daily(db_path: str = "trades.db") -> ChartImage:
     ax.set_ylabel("USD")
     ax.tick_params(axis="x", rotation=30)
     return _fig_to_png("daily.png")
+
+
+def chart_calendar(
+    db_path: str = "trades.db",
+    year: int | None = None,
+    month: int | None = None,
+) -> ChartImage:
+    """Render a month-grid P&L calendar like trading journal software."""
+    rows = _query(
+        db_path,
+        """SELECT date(timestamp) as day,
+                  COALESCE(SUM(CAST(pnl AS REAL)), 0) as total_pnl,
+                  COUNT(*) as trades,
+                  SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins
+           FROM trades WHERE pnl IS NOT NULL GROUP BY day ORDER BY day""",
+    )
+    by_day: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        by_day[str(r["day"])] = {
+            "pnl": float(r["total_pnl"]),
+            "trades": int(r["trades"]),
+            "wins": int(r["wins"]),
+        }
+
+    # Default to most recent month with data
+    if year is None or month is None:
+        if by_day:
+            last = sorted(by_day.keys())[-1]
+            d = date.fromisoformat(last)
+            year, month = d.year, d.month
+        else:
+            today = date.today()
+            year, month = today.year, today.month
+
+    plt.style.use("dark_background")
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.set_xlim(0, 7)
+    ax.set_ylim(-7, 1)
+    ax.axis("off")
+    ax.set_aspect("equal")
+
+    month_name = _calendar.month_name[month]
+    ax.text(3.5, 0.6, f"{month_name} {year}", ha="center", va="center",
+            fontsize=16, fontweight="bold", color="white")
+
+    # Weekday headers
+    for i, name in enumerate(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]):
+        ax.text(i + 0.5, 0.05, name, ha="center", va="center",
+                fontsize=8, color="#9ba7b9")
+
+    # Compute max absolute PnL for intensity scaling
+    days_in_month = _calendar.monthrange(year, month)[1]
+    max_abs = 0.0
+    month_total = 0.0
+    for d in range(1, days_in_month + 1):
+        key = f"{year}-{month:02d}-{d:02d}"
+        if key in by_day:
+            abs_pnl = abs(by_day[key]["pnl"])
+            if abs_pnl > max_abs:
+                max_abs = abs_pnl
+            month_total += by_day[key]["pnl"]
+    if max_abs == 0:
+        max_abs = 1.0
+
+    first_dow = _calendar.monthrange(year, month)[0]
+    # Python Monday=0; we need Sunday=0
+    first_dow = (first_dow + 1) % 7
+
+    for d in range(1, days_in_month + 1):
+        col = (first_dow + d - 1) % 7
+        row = (first_dow + d - 1) // 7
+        x = col
+        y = -row - 0.5
+
+        key = f"{year}-{month:02d}-{d:02d}"
+        info = by_day.get(key)
+
+        if info is None:
+            face = "#1a2030"
+            pnl_text = ""
+            meta = ""
+        else:
+            pnl = info["pnl"]
+            intensity = min(1.0, abs(pnl) / max_abs) * 0.6 + 0.1
+            if pnl > 0:
+                face = (0.25, 0.73, 0.31, intensity)
+            elif pnl < 0:
+                face = (0.97, 0.32, 0.29, intensity)
+            else:
+                face = "#1a2030"
+            sign = "+" if pnl >= 0 else ""
+            pnl_text = f"{sign}${pnl:.0f}"
+            meta = f"{info['trades']}t {info['wins']}w"
+
+        rect = FancyBboxPatch(
+            (x + 0.04, y - 0.42), 0.92, 0.84,
+            boxstyle="round,pad=0.04", facecolor=face,
+            edgecolor="#2d3748", linewidth=0.5,
+        )
+        ax.add_patch(rect)
+        ax.text(x + 0.14, y + 0.28, str(d), ha="left", va="center",
+                fontsize=7, color="#9ba7b9")
+        if pnl_text:
+            ax.text(x + 0.5, y - 0.02, pnl_text, ha="center", va="center",
+                    fontsize=9, fontweight="bold",
+                    color="#56d364" if info["pnl"] >= 0 else "#ff8882")
+        if meta:
+            ax.text(x + 0.5, y - 0.26, meta, ha="center", va="center",
+                    fontsize=6.5, color="#9ba7b9")
+
+    # Monthly summary bar
+    sign = "+" if month_total >= 0 else ""
+    color = "#3fb950" if month_total >= 0 else "#f85149"
+    ax.text(3.5, -((first_dow + days_in_month - 1) // 7) - 1.3,
+            f"Month total: {sign}${month_total:.2f}",
+            ha="center", va="center", fontsize=11, fontweight="bold", color=color)
+
+    return _fig_to_png("calendar.png")

@@ -15,6 +15,7 @@ import httpx
 from discord import app_commands
 
 from kalshi_bot.alerts.charts import (
+    chart_calendar,
     chart_daily,
     chart_edge,
     chart_pnl,
@@ -226,7 +227,7 @@ class DiscordBotAlerter:
 
         @self._tree.command(name="chart", description="Render a performance chart")
         @app_commands.describe(
-            kind="One of: pnl, winrate, scatter, routes, edge, daily",
+            kind="One of: pnl, winrate, scatter, routes, edge, daily, calendar",
         )
         async def chart_cmd(interaction: discord.Interaction, kind: str) -> None:
             kind_norm = kind.strip().lower()
@@ -237,12 +238,13 @@ class DiscordBotAlerter:
                 "routes": chart_routes,
                 "edge": chart_edge,
                 "daily": chart_daily,
+                "calendar": chart_calendar,
             }
             renderer = chart_map.get(kind_norm)
             if renderer is None:
                 await _send_text(
                     interaction,
-                    "Unknown chart. Use: pnl, winrate, scatter, routes, edge, daily",
+                    "Unknown chart. Use: pnl, winrate, scatter, routes, edge, daily, calendar",
                 )
                 return
 

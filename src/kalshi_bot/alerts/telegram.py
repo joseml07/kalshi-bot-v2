@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import calendar as _calendar
 import re
 import sqlite3
 from collections.abc import Callable, Coroutine
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -154,12 +155,13 @@ class TelegramAlerter:
             "cleardata": "Wipe all trades and signals from database",
             "kill": "Activate kill switch (halt trading)",
             "resume": "Remove kill switch (resume trading)",
+            "calendar": "Monthly P\u0026L calendar: /calendar [YYYY MM]",
             "ip": "Show server IP and dashboard URL",
             "help": "Show this message",
         }
         all_cmds = list(self._commands.keys()) + list(self._arg_commands.keys()) + ["help"]
         for cmd in [
-            "status", "pnl", "stats", "maker", "signals", "trades", "analysis", "window",
+            "status", "pnl", "calendar", "stats", "maker", "signals", "trades", "analysis", "window",
             "data", "symbols", "balance", "positions", "config", "set", "newsession",
             "cleardata", "kill", "resume", "help",
         ]:
@@ -771,6 +773,174 @@ def make_symbols_command(tracker: Any, settings: Any) -> CommandHandler:
             else:
                 status = "no window"
             lines.append(f"  <b>{sym}</b> [{enabled}] {status}")
+        return "\n".join(lines)
+
+    return handler
+
+
+def make_calendar_command(db_path: str = "trades.db") -> ArgCommandHandler:
+    """Render a text-based P&L calendar for Telegram.
+
+    Usage: /calendar        → current month (or most recent with data)
+           /calendar 2026 5 → May 2026
+    """
+
+    async def handler(args: list[str]) -> str:
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT date(timestamp) as day,
+                          COALESCE(SUM(CAST(pnl AS REAL)), 0) as pnl,
+                          COUNT(*) as trades,
+                          SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+                          SUM(CASE WHEN CAST(pnl AS REAL) <= 0 THEN 1 ELSE 0 END) as losses
+                   FROM trades
+                   WHERE pnl IS NOT NULL
+                   GROUP BY day
+                   ORDER BY day""",
+            ).fetchall()
+            conn.close()
+        except Exception:
+            return "No trade data yet."
+
+        by_day: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            by_day[str(r["day"])] = {
+                "pnl": float(r["pnl"]),
+                "trades": int(r["trades"]),
+                "wins": int(r["wins"]),
+                "losses": int(r["losses"]),
+            }
+
+        # Determine which month to show
+        year: int | None = None
+        month: int | None = None
+        if len(args) >= 2:
+            try:
+                year = int(args[0])
+                month = int(args[1])
+            except ValueError:
+                return "Usage: /calendar [YYYY MM]"
+        elif len(args) == 1:
+            # Try month name or number for current year
+            try:
+                month = int(args[0])
+                year = date.today().year
+            except ValueError:
+                return "Usage: /calendar [YYYY MM]"
+
+        if year is None or month is None:
+            if by_day:
+                last_key = sorted(by_day.keys())[-1]
+                d = date.fromisoformat(last_key)
+                year, month = d.year, d.month
+            else:
+                today = date.today()
+                year, month = today.year, today.month
+
+        if month < 1 or month > 12:
+            return "Invalid month. Use 1-12."
+
+        month_name = _calendar.month_name[month]
+        days_in_month = _calendar.monthrange(year, month)[1]
+        # Python: Monday=0; shift to Sunday=0
+        first_dow = (_calendar.monthrange(year, month)[0] + 1) % 7
+
+        # Gather monthly stats
+        month_pnl = 0.0
+        month_trades = 0
+        month_wins = 0
+        green_days = 0
+        red_days = 0
+        flat_days = 0
+        trading_days = 0
+
+        day_data: list[dict[str, Any] | None] = []
+        for d in range(1, days_in_month + 1):
+            key = f"{year}-{month:02d}-{d:02d}"
+            info = by_day.get(key)
+            day_data.append(info)
+            if info:
+                trading_days += 1
+                month_pnl += info["pnl"]
+                month_trades += info["trades"]
+                month_wins += info["wins"]
+                if info["pnl"] > 0:
+                    green_days += 1
+                elif info["pnl"] < 0:
+                    red_days += 1
+                else:
+                    flat_days += 1
+
+        # Build the text calendar
+        lines: list[str] = []
+        lines.append(f"<b>📅 {month_name} {year}</b>")
+        lines.append("")
+
+        # Monospace grid header
+        lines.append("<code>Sun Mon Tue Wed Thu Fri Sat</code>")
+
+        # Build week rows
+        cells: list[str] = []
+        # Leading blanks
+        for _ in range(first_dow):
+            cells.append("   ")
+
+        for d in range(1, days_in_month + 1):
+            info = day_data[d - 1]
+            if info is None:
+                # No trades — just the day number, dimmed
+                cells.append(f"{d:>3}")
+            else:
+                if info["pnl"] > 0:
+                    marker = "🟩"
+                elif info["pnl"] < 0:
+                    marker = "🟥"
+                else:
+                    marker = "⬜"
+                cells.append(f"{marker}{d:<2}")
+
+        # Pad to complete the last week
+        while len(cells) % 7 != 0:
+            cells.append("   ")
+
+        # Format into rows of 7
+        for i in range(0, len(cells), 7):
+            week = cells[i : i + 7]
+            lines.append("<code>" + " ".join(week) + "</code>")
+
+        lines.append("")
+
+        # Detail lines for days with trades
+        lines.append("<b>Daily Breakdown</b>")
+        for d in range(1, days_in_month + 1):
+            info = day_data[d - 1]
+            if info is None:
+                continue
+            sign = "+" if info["pnl"] >= 0 else ""
+            icon = "🟢" if info["pnl"] > 0 else "🔴" if info["pnl"] < 0 else "⚪"
+            lines.append(
+                f"  {icon} {d:>2} — {sign}${info['pnl']:.2f}"
+                f"  ({info['trades']}t {info['wins']}w/{info['losses']}l)"
+            )
+
+        # Monthly summary
+        lines.append("")
+        sign = "+" if month_pnl >= 0 else ""
+        wr = (month_wins / month_trades * 100) if month_trades > 0 else 0
+        avg_day = month_pnl / trading_days if trading_days > 0 else 0
+        avg_sign = "+" if avg_day >= 0 else ""
+        day_wr = (green_days / (green_days + red_days) * 100) if (green_days + red_days) > 0 else 0
+
+        lines.append(f"<b>Month Total: {sign}${month_pnl:.2f}</b>")
+        lines.append(
+            f"Days: {green_days}🟢 {red_days}🔴 {flat_days}⚪"
+            f"  ({day_wr:.0f}% win days)"
+        )
+        lines.append(f"Trades: {month_trades}  WR: {wr:.0f}%")
+        lines.append(f"Avg/day: {avg_sign}${avg_day:.2f}")
+
         return "\n".join(lines)
 
     return handler

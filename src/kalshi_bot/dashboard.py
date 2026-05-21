@@ -149,7 +149,9 @@ def api_pnl_history(all: bool = False) -> list[dict[str, Any]]:  # noqa: A002
     return _query(
         f"""SELECT date(timestamp) as day,
                   COALESCE(SUM(CAST(pnl AS REAL)), 0) as pnl,
-                  COUNT(*) as trades
+                  COUNT(*) as trades,
+                  SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+                  SUM(CASE WHEN CAST(pnl AS REAL) <= 0 THEN 1 ELSE 0 END) as losses
            FROM trades
            {where}
            GROUP BY day
