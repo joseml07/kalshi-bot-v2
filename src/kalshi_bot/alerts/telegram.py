@@ -70,12 +70,15 @@ class TelegramAlerter:
 
     async def poll_commands(self) -> None:
         self._polling = True
-        await self._ensure_webhook_disabled()
+        asyncio.create_task(self._ensure_webhook_disabled())
+        logger.info("telegram_poll_started")
         while self._polling:
             try:
                 updates = await self._get_updates()
                 for update in updates:
                     await self._handle_update(update)
+                if not updates:
+                    await asyncio.sleep(1)
             except Exception:
                 logger.exception("Telegram poll error")
                 await asyncio.sleep(5)
@@ -87,7 +90,7 @@ class TelegramAlerter:
                 url,
                 params={
                     "offset": str(self._offset),
-                    "timeout": "30",
+                    "timeout": "0",
                     "allowed_updates": json.dumps(self._allowed_updates),
                 },
                 timeout=40.0,
@@ -226,10 +229,13 @@ class TelegramAlerter:
     async def _send(self, text: str) -> None:
         url = f"{TELEGRAM_API}/bot{self._bot_token}/sendMessage"
         try:
-            resp = await self._client.post(
-                url,
-                json={"chat_id": self._chat_id, "text": text, "parse_mode": "HTML"},
-            )
+            payload = {"chat_id": self._chat_id, "text": text, "parse_mode": "HTML"}
+
+            def _post() -> httpx.Response:
+                with httpx.Client(timeout=10.0) as client:
+                    return client.post(url, json=payload)
+
+            resp = await asyncio.to_thread(_post)
             if resp.status_code != 200:
                 logger.warning("telegram_send_failed", status=resp.status_code, response=resp.text)
             else:
