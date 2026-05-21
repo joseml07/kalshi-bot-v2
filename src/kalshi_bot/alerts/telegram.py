@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import calendar as _calendar
+import html
+import json
 import re
 import sqlite3
 from collections.abc import Callable, Coroutine
@@ -31,6 +33,11 @@ def _html_to_discord(text: str) -> str:
     return text
 
 
+def _escape_html(value: Any) -> str:
+    """Escape dynamic content for Telegram HTML parse mode."""
+    return html.escape(str(value), quote=False)
+
+
 CommandHandler = Callable[[], Coroutine[Any, Any, str]]
 ArgCommandHandler = Callable[[list[str]], Coroutine[Any, Any, str]]
 
@@ -47,6 +54,13 @@ class TelegramAlerter:
         self._commands: dict[str, CommandHandler] = {}
         self._arg_commands: dict[str, ArgCommandHandler] = {}
         self._polling = False
+        self._allowed_updates = [
+            "message",
+            "edited_message",
+            "channel_post",
+            "edited_channel_post",
+        ]
+        self._webhook_cleared = False
 
     def register(self, name: str, handler: CommandHandler) -> None:
         self._commands[name] = handler
@@ -56,6 +70,7 @@ class TelegramAlerter:
 
     async def poll_commands(self) -> None:
         self._polling = True
+        await self._ensure_webhook_disabled()
         while self._polling:
             try:
                 updates = await self._get_updates()
@@ -73,13 +88,21 @@ class TelegramAlerter:
                 params={
                     "offset": str(self._offset),
                     "timeout": "30",
-                    "allowed_updates": '["message"]',
+                    "allowed_updates": json.dumps(self._allowed_updates),
                 },
                 timeout=40.0,
             )
             if resp.status_code != 200:
+                logger.warning(
+                    "telegram_get_updates_failed",
+                    status=resp.status_code,
+                    response=resp.text,
+                )
                 return []
             data = resp.json()
+            if not data.get("ok", True):
+                logger.warning("telegram_get_updates_not_ok", response=data)
+                return []
             results: list[dict[str, Any]] = data.get("result", [])
             return results
         except httpx.TimeoutException:
@@ -88,11 +111,40 @@ class TelegramAlerter:
             logger.exception("Telegram getUpdates error")
             return []
 
+    async def _ensure_webhook_disabled(self) -> None:
+        if self._webhook_cleared:
+            return
+        url = f"{TELEGRAM_API}/bot{self._bot_token}/deleteWebhook"
+        try:
+            resp = await self._client.post(
+                url,
+                json={"drop_pending_updates": True},
+                timeout=10.0,
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "telegram_delete_webhook_failed",
+                    status=resp.status_code,
+                    response=resp.text,
+                )
+            else:
+                data = resp.json()
+                if not data.get("ok", True):
+                    logger.warning("telegram_delete_webhook_not_ok", response=data)
+        except Exception:
+            logger.exception("telegram_delete_webhook_error")
+        self._webhook_cleared = True
+
     async def _handle_update(self, update: dict[str, Any]) -> None:
         update_id: int = update["update_id"]
         self._offset = update_id + 1
 
-        message = update.get("message")
+        message = (
+            update.get("message")
+            or update.get("edited_message")
+            or update.get("channel_post")
+            or update.get("edited_channel_post")
+        )
         if not message:
             logger.info("telegram_update_no_message", update=update)
             return
@@ -198,13 +250,13 @@ class TelegramAlerter:
     async def trade_placed(self, signal: Signal, contracts: int, order_id: str) -> None:
         text = (
             f"<b>Trade Placed</b>\n"
-            f"Ticker: <code>{signal.ticker}</code>\n"
-            f"Side: {signal.side.value.upper()} x{contracts}\n"
+            f"Ticker: <code>{_escape_html(signal.ticker)}</code>\n"
+            f"Side: {_escape_html(signal.side.value.upper())} x{contracts}\n"
             f"Price: ${signal.kalshi_price}\n"
             f"Edge: {signal.net_edge:.1%}\n"
-            f"Strategy: {signal.strategy.value}\n"
-            f"Route: {signal.route}\n"
-            f"Order: <code>{order_id}</code>"
+            f"Strategy: {_escape_html(signal.strategy.value)}\n"
+            f"Route: {_escape_html(signal.route)}\n"
+            f"Order: <code>{_escape_html(order_id)}</code>"
         )
         await self._send(text)
         await self._send_discord(text)
@@ -212,9 +264,9 @@ class TelegramAlerter:
     async def trade_exited(self, ticker: str, side: str, contracts: int, reason: str) -> None:
         text = (
             f"<b>EXIT</b>\n"
-            f"Ticker: <code>{ticker}</code>\n"
-            f"Side: {side.upper()} x{contracts}\n"
-            f"Reason: {reason}"
+            f"Ticker: <code>{_escape_html(ticker)}</code>\n"
+            f"Side: {_escape_html(side.upper())} x{contracts}\n"
+            f"Reason: {_escape_html(reason)}"
         )
         await self._send(text)
         await self._send_discord(text)
@@ -222,7 +274,11 @@ class TelegramAlerter:
     async def trade_settled(self, ticker: str, won: bool, pnl: Decimal) -> None:
         result = "WIN" if won else "LOSS"
         sign = "+" if pnl >= 0 else ""
-        text = f"<b>Settled [{result}]</b>\nTicker: <code>{ticker}</code>\nP&L: {sign}${pnl}"
+        text = (
+            f"<b>Settled [{_escape_html(result)}]</b>\n"
+            f"Ticker: <code>{_escape_html(ticker)}</code>\n"
+            f"P&L: {sign}${pnl}"
+        )
         await self._send(text)
         await self._send_discord(text)
 
@@ -231,9 +287,9 @@ class TelegramAlerter:
     ) -> None:
         text = (
             f"<b>Trade didn't go through</b>\n"
-            f"Ticker: <code>{ticker}</code>\n"
-            f"Side: {side.upper()} x{contracts}\n"
-            f"Reason: {reason}"
+            f"Ticker: <code>{_escape_html(ticker)}</code>\n"
+            f"Side: {_escape_html(side.upper())} x{contracts}\n"
+            f"Reason: {_escape_html(reason)}"
         )
         await self._send(text)
         await self._send_discord(text)
@@ -254,12 +310,12 @@ class TelegramAlerter:
         result = "UP" if close_price >= open_price else "DOWN"
 
         text = (
-            f"<b>Window Analysis:</b> {symbol} {open_time.strftime('%H:%M')}-{close_time.strftime('%H:%M')} UTC\n"
+            f"<b>Window Analysis:</b> {_escape_html(symbol)} {open_time.strftime('%H:%M')}-{close_time.strftime('%H:%M')} UTC\n"
             f"Δ: {price_change_pct:+.4%} {result}\n"
             f"Signals: {signals_in_window} | Trades: {trades_in_window} | P&L: ${paper_pnl:+.4f}\n\n"
         )
         if commentary:
-            text += f"<b>AI:</b> {commentary}"
+            text += f"<b>AI:</b> {_escape_html(commentary)}"
         else:
             text += "<i>No AI commentary available.</i>"
 
@@ -295,7 +351,7 @@ def make_status_command(risk_manager: Any, executor: Any, client: Any, settings:
         kill = "YES" if Path("KILL_SWITCH").exists() else "no"
         return (
             f"<b>Bot Status</b>\n"
-            f"Mode: {mode} | Env: {env}\n"
+            f"Mode: {_escape_html(mode)} | Env: {_escape_html(env)}\n"
             f"Balance: ${balance}\n"
             f"Daily P&L: ${risk_manager.daily_pnl}\n"
             f"Open positions: {risk_manager.open_position_count}\n"
@@ -340,10 +396,10 @@ def make_positions_command(client: Any) -> CommandHandler:
         total_exposure = Decimal("0")
         total_fees = Decimal("0")
         for p in positions[:10]:
-            ticker = p.get("ticker", "?")
-            qty = p.get("position_fp", "0")
-            cost = p.get("total_traded_dollars", "0")
-            fees = p.get("fees_paid_dollars", "0")
+            ticker = _escape_html(p.get("ticker", "?"))
+            qty = _escape_html(p.get("position_fp", "0"))
+            cost = _escape_html(p.get("total_traded_dollars", "0"))
+            fees = _escape_html(p.get("fees_paid_dollars", "0"))
             total_exposure += Decimal(cost)
             total_fees += Decimal(fees)
             lines.append(f"  x{qty} <code>{ticker}</code>\n    cost=${cost} fees=${fees}")
@@ -368,7 +424,9 @@ def make_trades_command(db_path: str = "trades.db") -> CommandHandler:
         for r in rows:
             t = r["timestamp"][11:19] if r["timestamp"] else "?"
             pnl_str = f"${r['pnl']}" if r["pnl"] else "pending"
-            lines.append(f"  {t} {r['side'].upper()} x{r['contracts']} <code>{r['ticker']}</code> {pnl_str}")
+            side = _escape_html(r["side"].upper())
+            ticker = _escape_html(r["ticker"])
+            lines.append(f"  {t} {side} x{r['contracts']} <code>{ticker}</code> {pnl_str}")
         return "\n".join(lines)
 
     return handler
@@ -434,7 +492,7 @@ def make_stats_command(db_path: str = "trades.db") -> CommandHandler:
             cnt = rr["cnt"] or 0
             rwins = rr["wins"] or 0
             rwr = int((rwins / cnt) * 100) if cnt else 0
-            label = str(rr["route"] or "unknown").replace("_", " ").title()
+            label = _escape_html(str(rr["route"] or "unknown").replace("_", " ").title())
             route_bits.append(f"{label}: {cnt} ({rwr}% WR)")
 
         label = "Session Stats" if session_start else "All-Time Stats"
@@ -449,9 +507,9 @@ def make_stats_command(db_path: str = "trades.db") -> CommandHandler:
         if route_bits:
             lines.append("Routes: " + " | ".join(route_bits))
         if best:
-            lines.append(f"Best: <code>{best['ticker']}</code> +${best['pnl']}")
+            lines.append(f"Best: <code>{_escape_html(best['ticker'])}</code> +${best['pnl']}")
         if worst:
-            lines.append(f"Worst: <code>{worst['ticker']}</code> ${worst['pnl']}")
+            lines.append(f"Worst: <code>{_escape_html(worst['ticker'])}</code> ${worst['pnl']}")
         return "\n".join(lines)
 
     return handler
@@ -518,9 +576,11 @@ def make_signals_command(db_path: str = "trades.db") -> CommandHandler:
         for r in rows:
             ts = r["timestamp"][11:19] if r["timestamp"] else "?"
             edge_pct = f"{float(r['net_edge']) * 100:.1f}%"
-            action = r["action"]
+            action = _escape_html(r["action"])
+            ticker = _escape_html(r["ticker"])
+            side = _escape_html(r["side"].upper())
             lines.append(
-                f"  {ts} [{action}] {r['side'].upper()} <code>{r['ticker'][-12:]}</code> edge={edge_pct} {r['seconds_remaining']}s"
+                f"  {ts} [{action}] {side} <code>{ticker[-12:]}</code> edge={edge_pct} {r['seconds_remaining']}s"
             )
         return "\n".join(lines)
 
@@ -536,8 +596,8 @@ def make_config_command(settings: Any) -> CommandHandler:
         )
         return (
             "<b>Current Config</b>\n"
-            f"Mode: {settings.trading_mode} | Env: {settings.kalshi_env}\n"
-            f"Symbols: {settings.symbols}\n"
+            f"Mode: {_escape_html(settings.trading_mode)} | Env: {_escape_html(settings.kalshi_env)}\n"
+            f"Symbols: {_escape_html(settings.symbols)}\n"
             f"Edge threshold: {settings.edge_threshold:.2f}\n"
             f"Time window: {settings.momentum_min_time}-{settings.momentum_max_time}s\n"
             f"Price range: ${settings.min_trade_price:.2f}-${settings.max_trade_price:.2f}\n"
@@ -568,7 +628,7 @@ def make_set_command(settings: Any) -> ArgCommandHandler:
             alias, value = mutate_setting(settings, key, raw_value)
         except SettingError as exc:
             return str(exc)
-        return f"Set {alias} = {value}"
+        return f"Set {_escape_html(alias)} = {_escape_html(value)}"
 
     return handler
 
@@ -720,12 +780,12 @@ def make_analysis_command(db_path: str = "trades.db") -> CommandHandler:
 
         lines = ["<b>Last 5 Window Analyses</b>\n"]
         for r in rows:
-            symbol = r["symbol"]
+            symbol = _escape_html(r["symbol"])
             open_time = r["window_open"][11:16]
             close_time = r["window_close"][11:16]
             change = r["price_change_pct"]
             res = r["result"].upper()
-            ai = r["ai_commentary"] or "<i>None</i>"
+            ai = _escape_html(r["ai_commentary"]) if r["ai_commentary"] else "<i>None</i>"
             lines.append(f"<b>{symbol} {open_time}-{close_time}</b>: Δ {change:+.2%} {res}")
             lines.append(f"AI: {ai}\n")
         return "\n".join(lines)
@@ -774,7 +834,7 @@ def make_symbols_command(tracker: Any, settings: Any) -> CommandHandler:
                 status = f"${win.current_price:,.2f} ({win.price_change_pct:+.4%}) {win.seconds_remaining}s left"
             else:
                 status = "no window"
-            lines.append(f"  <b>{sym}</b> [{enabled}] {status}")
+            lines.append(f"  <b>{_escape_html(sym)}</b> [{enabled}] {status}")
         return "\n".join(lines)
 
     return handler
