@@ -82,6 +82,9 @@ header {
 .tab.active { display:block; }
 
 .grid { display:grid; grid-template-columns:repeat(12,1fr); gap:12px; }
+.card-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:12px; }
+.card-grid .card { grid-column: auto; }
+.card-grid .card.hero { grid-column: span 2; }
 .card {
   grid-column: span 3;
   background:var(--panel);
@@ -615,7 +618,6 @@ function renderKpis(summary, stats, balance){
   const losses = Number(summary.losses || 0);
   const totalTrades = Number(summary.total_trades || 0);
   const pnl = Number(summary.total_pnl || 0);
-  const pnlCls = clsByVal(pnl);
 
   const livePnl = Number(summary.live_pnl || 0);
   const liveTrades = Number(summary.live_trades || 0);
@@ -623,44 +625,75 @@ function renderKpis(summary, stats, balance){
   const liveLosses = Number(summary.live_losses || 0);
   const paperPnl = Number(summary.paper_pnl || 0);
   const paperTrades = Number(summary.paper_trades || 0);
+  const paperWins = Number(summary.paper_wins || 0);
+  const paperLosses = Number(summary.paper_losses || 0);
   const hasLive = liveTrades > 0;
 
-  const liveBadge = hasLive
-    ? `<div class="card hero" style="border:2px solid ${livePnl>=0?'#3fb950':'#f85149'}">
-         <div class="k" style="display:flex;align-items:center;gap:6px">LIVE P&L <span style="background:${livePnl>=0?'#238636':'#da3633'};color:#fff;padding:1px 8px;border-radius:9999px;font-size:.65rem;font-weight:700">REAL MONEY</span></div>
-         <div class="v ${clsByVal(livePnl)}">${fmtMoney(livePnl)}</div>
-         <div class="micro">${liveWins}W / ${liveLosses}L / ${liveTrades} Trades</div>
-       </div>` : '';
+  // Live-specific stats from api/stats
+  const ls = stats.live || {};
+  const liveWR = Number((ls.win_rate||0) * 100);
+  const liveAvg = Number(ls.avg_pnl||0);
+  const liveFees = Number(ls.total_fees||0);
+  const liveBest = ls.best_trade;
+  const liveWorst = ls.worst_trade;
 
-  const pnlHero = `${liveBadge}
-    <div class="card hero ${pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">
-      <div class="k">${hasLive ? 'All-Time P&L (Paper + Live)' : 'Total P&L'}</div>
-      <div class="v ${pnlCls}">${fmtMoney(pnl)}</div>
-      <div class="micro">${wins} Wins / ${losses} Losses / ${totalTrades} Trades${hasLive ? ' ('+paperTrades+' paper, '+liveTrades+' live)' : ''}</div>
-    </div>`;
-
-  const wr = Number((stats.win_rate||0) * 100);
-  const wrCls = (stats.win_rate||0)>=0.5 ? 'pos' : 'neg';
+  // Paper stats (overall minus live)
+  const paperWR = paperTrades > 0 ? (paperWins / paperTrades * 100) : 0;
 
   const bal = balance && balance.balance != null ? Number(balance.balance) : null;
   const mode = balance && balance.trading_mode ? String(balance.trading_mode).toUpperCase() : '—';
-  const modeCls = mode === 'LIVE' ? 'neg' : '';
   const balCard = bal == null
     ? ['Balance', '—', '', 'No live_state.json yet']
     : ['Balance', `$${bal.toFixed(2)}`, '', `${mode} • Kelly ${(balance.kelly_fraction ?? 0.25)}`];
 
-  const cards=[
-    balCard,
-    ['Win rate', `${wr.toFixed(1)}%`, wrCls, `${wins}W • ${losses}L`],
-    ['Open positions', `${(summary.open_positions||[]).length}`, '', `${(summary.total_in_positions||0).toFixed(2)}$ in market`],
-    ['Avg P&L', fmtMoney(stats.avg_pnl||0), clsByVal(stats.avg_pnl||0), 'Per settled trade'],
-    ['Fees', `$${Number(stats.total_fees||0).toFixed(2)}`, 'neg', 'Session accumulated'],
-    ['Best', stats.best_trade?fmtMoney(stats.best_trade.pnl):'—', 'pos', stats.best_trade?String(stats.best_trade.ticker):'No data'],
-    ['Worst', stats.worst_trade?fmtMoney(stats.worst_trade.pnl):'—', 'neg', stats.worst_trade?String(stats.worst_trade.ticker):'No data'],
-  ];
-  $('kpiCards').innerHTML = pnlHero + cards.map(([k,v,c,m])=>`<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div><div class="micro">${m}</div></div>`).join('');
+  // --- LIVE section ---
+  const liveSection = hasLive ? `
+    <div style="margin-bottom:4px;display:flex;align-items:center;gap:8px">
+      <span style="font-size:.85rem;font-weight:700;color:#e6edf3;text-transform:uppercase;letter-spacing:.05em">Live Trading</span>
+      <span style="background:${livePnl>=0?'#238636':'#da3633'};color:#fff;padding:1px 8px;border-radius:9999px;font-size:.6rem;font-weight:700">REAL MONEY</span>
+    </div>
+    <div class="card-grid">
+      <div class="card hero" style="border:2px solid ${livePnl>=0?'#3fb950':'#f85149'}">
+        <div class="k">Live P&L</div>
+        <div class="v ${clsByVal(livePnl)}">${fmtMoney(livePnl)}</div>
+        <div class="micro">${liveWins}W / ${liveLosses}L / ${liveTrades} Trades</div>
+      </div>
+      ${[
+        balCard,
+        ['Win Rate', liveWR.toFixed(1)+'%', liveWR>=50?'pos':'neg', liveWins+'W • '+liveLosses+'L'],
+        ['Open', (summary.open_positions||[]).length+'', '', (summary.total_in_positions||0).toFixed(2)+'$ in market'],
+        ['Avg P&L', fmtMoney(liveAvg), clsByVal(liveAvg), 'Per live trade'],
+        ['Fees', '$'+liveFees.toFixed(2), 'neg', 'Live accumulated'],
+        ['Best', liveBest?fmtMoney(liveBest.pnl):'—', 'pos', liveBest?String(liveBest.ticker):'No data'],
+        ['Worst', liveWorst?fmtMoney(liveWorst.pnl):'—', 'neg', liveWorst?String(liveWorst.ticker):'No data'],
+      ].map(([k,v,c,m])=>'<div class="card"><div class="k">'+k+'</div><div class="v '+c+'">'+v+'</div><div class="micro">'+m+'</div></div>').join('')}
+    </div>` : '';
 
-  $('riskDaily').textContent = `Daily PnL: ${fmtMoney(pnl)}`;
+  // --- PAPER section ---
+  const wr = Number((stats.win_rate||0) * 100);
+  const wrCls = (stats.win_rate||0)>=0.5 ? 'pos' : 'neg';
+  const paperSection = `
+    <div style="margin-top:16px;margin-bottom:4px">
+      <span style="font-size:.85rem;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:.05em">Paper Trading</span>
+    </div>
+    <div class="card-grid">
+      <div class="card hero ${paperPnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">
+        <div class="k">Paper P&L</div>
+        <div class="v ${clsByVal(paperPnl)}">${fmtMoney(paperPnl)}</div>
+        <div class="micro">${paperWins}W / ${paperLosses}L / ${paperTrades} Trades</div>
+      </div>
+      ${[
+        ['Win Rate', paperWR.toFixed(1)+'%', paperWR>=50?'pos':'neg', paperWins+'W • '+paperLosses+'L'],
+        ['Avg P&L', fmtMoney(stats.avg_pnl||0), clsByVal(stats.avg_pnl||0), 'All trades'],
+        ['Fees', '$'+Number(stats.total_fees||0).toFixed(2), 'neg', 'Session accumulated'],
+        ['Best', stats.best_trade?fmtMoney(stats.best_trade.pnl):'—', 'pos', stats.best_trade?String(stats.best_trade.ticker):'No data'],
+        ['Worst', stats.worst_trade?fmtMoney(stats.worst_trade.pnl):'—', 'neg', stats.worst_trade?String(stats.worst_trade.ticker):'No data'],
+      ].map(([k,v,c,m])=>'<div class="card"><div class="k">'+k+'</div><div class="v '+c+'">'+v+'</div><div class="micro">'+m+'</div></div>').join('')}
+    </div>`;
+
+  $('kpiCards').innerHTML = liveSection + paperSection;
+
+  $('riskDaily').textContent = `Daily PnL: ${fmtMoney(livePnl || pnl)}`;
   $('riskPos').textContent = `Open positions: ${(summary.open_positions||[]).length}`;
   $('riskMode').textContent = `Mode: ${mode}`;
 }

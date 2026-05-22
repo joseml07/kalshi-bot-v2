@@ -236,6 +236,38 @@ def api_stats(all: bool = False) -> dict[str, Any]:  # noqa: A002
         params,
     )
     stats["session_active"] = ss is not None
+
+    # Live-only stats — separate from paper so dashboard can show them independently
+    live_where = where + " AND order_id NOT LIKE 'PAPER-%%'"
+    live_rows = _query(
+        f"""SELECT
+             COUNT(*) as total_trades,
+             SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+             SUM(CASE WHEN CAST(pnl AS REAL) < 0 THEN 1 ELSE 0 END) as losses,
+             COALESCE(AVG(CAST(pnl AS REAL)), 0) as avg_pnl,
+             COALESCE(SUM(CAST(pnl AS REAL)), 0) as total_pnl,
+             COALESCE(SUM(CAST(fees AS REAL)), 0) as total_fees
+           FROM trades {live_where}""",  # noqa: S608
+        params,
+    )
+    live = live_rows[0] if live_rows else {}
+    live_total = live.get("total_trades") or 0
+    live_wins = live.get("wins") or 0
+    live["win_rate"] = (live_wins / live_total) if live_total > 0 else 0.0
+    live_best = _query(
+        f"SELECT ticker, pnl FROM trades {live_where} "  # noqa: S608
+        "ORDER BY CAST(pnl AS REAL) DESC LIMIT 1",
+        params,
+    )
+    live_worst = _query(
+        f"SELECT ticker, pnl FROM trades {live_where} "  # noqa: S608
+        "ORDER BY CAST(pnl AS REAL) ASC LIMIT 1",
+        params,
+    )
+    live["best_trade"] = live_best[0] if live_best else None
+    live["worst_trade"] = live_worst[0] if live_worst else None
+    stats["live"] = live
+
     return stats
 
 
