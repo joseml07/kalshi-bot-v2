@@ -11,7 +11,6 @@ from datetime import datetime
 from typing import Any
 
 import websockets
-from websockets.legacy.client import WebSocketClientProtocol
 
 from kalshi_bot.models.price import PriceTick
 
@@ -40,7 +39,7 @@ class CoinbaseFeed:
         self._products = products or PRODUCTS
         self._eval_trigger = eval_trigger
         self._running = False
-        self._ws: WebSocketClientProtocol | None = None
+        self._ws: Any = None
         self._last_tick_mono: float | None = None
 
     async def start(self) -> None:

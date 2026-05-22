@@ -139,3 +139,14 @@ def test_taker_price_set_when_maker_route() -> None:
     sig = evaluate_lwm(w, w.ticker, ob, edge_threshold=0.01)
     assert sig is not None
     assert sig.taker_price is not None
+
+
+def test_yes_signal_blocked_early() -> None:
+    w = _make_window(0.005, 125)
+    ob = _book(yes_bid="0.55", no_bid="0.40")
+    # Should block because seconds_remaining > 120 (the default yes_decision_max_s)
+    assert evaluate_lwm(w, w.ticker, ob, edge_threshold=0.01) is None
+    # Should pass if we manually increase yes_decision_max_s to 130
+    sig = evaluate_lwm(w, w.ticker, ob, edge_threshold=0.01, yes_decision_max_s=130)
+    assert sig is not None
+    assert sig.side is Side.YES

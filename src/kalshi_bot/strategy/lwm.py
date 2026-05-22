@@ -82,6 +82,7 @@ def evaluate_lwm(
     edge_threshold: float | None = None,
     decision_min_s: int = 30,
     decision_max_s: int = 540,
+    yes_decision_max_s: int = 120,
     min_price_change: float | None = None,
     min_book_sum: float = 0.90,
     max_book_sum: float = 1.50,
@@ -128,6 +129,11 @@ def evaluate_lwm(
 
     side = Side.YES if pc > 0 else Side.NO
     if side is Side.NO and eff_yes_only:
+        return None
+
+    # YES is only predictive in the last 2 minutes. Early positive momentum
+    # reverts ~90% of the time (see yes_side_investigation.md).
+    if side is Side.YES and seconds_remaining > yes_decision_max_s:
         return None
 
     if side is Side.YES:
