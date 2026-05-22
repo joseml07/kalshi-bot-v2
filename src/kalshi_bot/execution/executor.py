@@ -220,21 +220,39 @@ class Executor:
             tracked.db_logged = True
             return tracked
 
+        # Use fresh orderbook price at placement time instead of signal's stale price
+        entry_price = signal.kalshi_price
+        route = signal.route if hasattr(signal, "route") else "taker"
+        if route != "maker" and self._get_orderbook is not None:
+            snapshot = self._get_orderbook(signal.ticker)
+            if snapshot is not None:
+                fresh_book, received_at = snapshot
+                age_s = (datetime.now(timezone.utc) - received_at).total_seconds()
+                if age_s < 5.0:  # only use if fresh
+                    if signal.side.value == "yes":
+                        fresh_ask = fresh_book.best_yes_ask
+                    else:
+                        fresh_ask = fresh_book.best_no_ask
+                    if fresh_ask is not None:
+                        entry_price = fresh_ask
+
+        if route != "maker":
+            entry_price = min(entry_price + TAKER_SLIPPAGE_BUFFER, Decimal("0.99"))
+
+        # Re-check edge with fresh price to avoid overpaying
+        win_prob = (
+            signal.real_prob if signal.side.value == "yes" else 1 - signal.real_prob
+        )
+        if float(entry_price) >= win_prob:
+            logger.info("Edge gone at fresh price %s, skipping", entry_price)
+            return None
+
         # Reserve the ticker BEFORE awaiting place_order. If we wait until
         # the order_id comes back, a concurrent eval tick can slip past the
         # risk gate and submit a duplicate order while we're still awaiting
         # the HTTP response — the 2026-04-16 live incident placed ~25
         # duplicate orders against a single signal for exactly this reason.
         self._risk.record_fill(signal.ticker, side=signal.side.value)
-
-        # For live taker orders, add a slippage buffer so the limit price
-        # crosses the spread even if the ask moved slightly since the signal.
-        entry_price = signal.kalshi_price
-        route = signal.route if hasattr(signal, "route") else "taker"
-        if route != "maker":
-            entry_price = min(
-                signal.kalshi_price + TAKER_SLIPPAGE_BUFFER, Decimal("0.99")
-            )
         try:
             order_resp = await self._client.place_order(
                 ticker=signal.ticker,
