@@ -307,6 +307,7 @@ pre.code {
     <button class="tabbtn" data-tab="trades">Trades</button>
     <button class="tabbtn" data-tab="analysis">Analysis</button>
     <button class="tabbtn" data-tab="risk">Risk</button>
+    <a href="/finance" target="_blank" class="tabbtn" style="border: 1px dashed var(--blue); color: var(--blue); text-decoration: none; font-weight: 500; background: rgba(0, 122, 255, 0.08); transition: all 0.2s;" onmouseover="this.style.background='rgba(0, 122, 255, 0.15)'; this.style.transform='translateY(-1px)'" onmouseout="this.style.background='rgba(0, 122, 255, 0.08)'; this.style.transform='none'">Money Management &rarr;</a>
   </div>
 
   <div class="sub-controls">
@@ -615,11 +616,27 @@ function renderKpis(summary, stats, balance){
   const totalTrades = Number(summary.total_trades || 0);
   const pnl = Number(summary.total_pnl || 0);
   const pnlCls = clsByVal(pnl);
-  const pnlHero = `
+
+  const livePnl = Number(summary.live_pnl || 0);
+  const liveTrades = Number(summary.live_trades || 0);
+  const liveWins = Number(summary.live_wins || 0);
+  const liveLosses = Number(summary.live_losses || 0);
+  const paperPnl = Number(summary.paper_pnl || 0);
+  const paperTrades = Number(summary.paper_trades || 0);
+  const hasLive = liveTrades > 0;
+
+  const liveBadge = hasLive
+    ? `<div class="card hero" style="border:2px solid ${livePnl>=0?'#3fb950':'#f85149'}">
+         <div class="k" style="display:flex;align-items:center;gap:6px">LIVE P&L <span style="background:${livePnl>=0?'#238636':'#da3633'};color:#fff;padding:1px 8px;border-radius:9999px;font-size:.65rem;font-weight:700">REAL MONEY</span></div>
+         <div class="v ${clsByVal(livePnl)}">${fmtMoney(livePnl)}</div>
+         <div class="micro">${liveWins}W / ${liveLosses}L / ${liveTrades} Trades</div>
+       </div>` : '';
+
+  const pnlHero = `${liveBadge}
     <div class="card hero ${pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">
-      <div class="k">Total P&L</div>
+      <div class="k">${hasLive ? 'All-Time P&L (Paper + Live)' : 'Total P&L'}</div>
       <div class="v ${pnlCls}">${fmtMoney(pnl)}</div>
-      <div class="micro">${wins} Wins • ${losses} Losses • ${totalTrades} Trades</div>
+      <div class="micro">${wins} Wins / ${losses} Losses / ${totalTrades} Trades${hasLive ? ' ('+paperTrades+' paper, '+liveTrades+' live)' : ''}</div>
     </div>`;
 
   const wr = Number((stats.win_rate||0) * 100);

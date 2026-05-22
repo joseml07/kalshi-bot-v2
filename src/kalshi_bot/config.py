@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     # Trading mode
     trading_mode: str = Field(default="paper", pattern=r"^(paper|live)$")
     paper_balance: float = Field(default=25.0, ge=0.0)
+    bankroll_override: float = Field(
+        default=0.0, ge=0.0,
+        description="If > 0, use this as bankroll for Kelly sizing even in live mode. "
+        "The bot still places real orders but sizes as if this were the balance.",
+    )
 
     # Risk limits
     daily_loss_limit: float = Field(default=25.0)

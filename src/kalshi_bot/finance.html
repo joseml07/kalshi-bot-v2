@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Kalshi Bot — Money Management</title>
+<style>
+:root {
+  --bg: #0d1117; --panel: #161b22; --panel-2: #1f2633;
+  --line: rgba(255,255,255,0.08); --line-soft: rgba(255,255,255,0.05);
+  --txt: #e6edf3; --muted: #9ba7b9; --blue: #58a6ff;
+  --green: #3fb950; --red: #f85149; --amber: #d29922;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  background: radial-gradient(900px 420px at 10% -5%, rgba(88,166,255,0.12) 0%, transparent 46%),
+              radial-gradient(900px 420px at 95% -8%, rgba(63,185,80,0.07) 0%, transparent 45%),
+              var(--bg);
+  color: var(--txt); min-height: 100vh; padding: 20px;
+}
+.container { max-width: 900px; margin: 0 auto; }
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+  margin-bottom: 16px;
+}
+header h1 { font-size: 1.15rem; }
+header p { color: var(--muted); font-size: .82rem; margin-top: 3px; }
+
+.warn-banner {
+  background: linear-gradient(135deg, rgba(210,153,34,0.15), rgba(248,81,73,0.10));
+  border: 1px solid rgba(210,153,34,0.4); border-radius: 14px;
+  padding: 16px 18px; margin-bottom: 16px; font-size: .88rem; line-height: 1.6;
+}
+.warn-banner strong { color: var(--amber); }
+
+.section {
+  background: var(--panel); border: 1px solid var(--line-soft); border-radius: 14px;
+  overflow: hidden; margin-bottom: 14px;
+}
+.section h2 {
+  font-size: .84rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+  padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel-2);
+}
+.section .body { padding: 16px; }
+
+.input-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 14px; }
+.input-group { display: flex; flex-direction: column; gap: 4px; }
+.input-group label { font-size: .74rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.input-group input, .input-group select {
+  background: #111924; border: 1px solid var(--line); border-radius: 8px;
+  color: var(--txt); padding: 8px 12px; font-size: .9rem; width: 160px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.input-group input:focus, .input-group select:focus { outline: none; border-color: var(--blue); }
+button.calc {
+  background: var(--blue); color: #000; border: none; border-radius: 8px;
+  padding: 9px 18px; font-size: .85rem; font-weight: 600; cursor: pointer;
+}
+button.calc:hover { opacity: .9; }
+
+.result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.rcard {
+  background: #111924; border: 1px solid var(--line-soft); border-radius: 12px; padding: 12px;
+}
+.rcard .k { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.rcard .v {
+  font-size: 1.2rem; font-weight: 700; margin-top: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.rcard .micro { font-size: .74rem; color: var(--muted); margin-top: 4px; }
+.pos { color: var(--green); } .neg { color: var(--red); } .warn { color: var(--amber); }
+
+.bar-container { margin-top: 14px; }
+.bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.bar-label { font-size: .78rem; color: var(--muted); width: 100px; text-align: right; }
+.bar-track { flex: 1; height: 24px; background: #111924; border-radius: 6px; overflow: hidden; position: relative; }
+.bar-fill { height: 100%; border-radius: 6px; display: flex; align-items: center; padding-left: 8px; font-size: .72rem; font-weight: 600; }
+.bar-amount { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: .74rem; color: var(--muted); }
+
+.timeline { margin-top: 14px; }
+.tl-item {
+  display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line-soft);
+}
+.tl-date { width: 90px; font-size: .78rem; color: var(--muted); flex-shrink: 0; }
+.tl-amount { width: 90px; font-size: .85rem; font-weight: 600; flex-shrink: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tl-note { font-size: .8rem; color: var(--muted); }
+
+.rules { line-height: 1.8; font-size: .88rem; }
+.rules li { margin-bottom: 6px; }
+.rules strong { color: var(--txt); }
+
+.live-fetch { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
+.live-chip {
+  background: #111924; border: 1px solid var(--line-soft); border-radius: 999px;
+  padding: 6px 14px; font-size: .8rem; color: var(--muted);
+}
+.live-chip strong { color: var(--txt); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <div>
+    <h1>Money Management</h1>
+    <p>Tax estimates, budgeting, and "the bot could die tomorrow" planning</p>
+  </div>
+  <a href="/">&larr; Back to Dashboard</a>
+</header>
+
+<div class="warn-banner">
+  <strong>This is not financial advice.</strong> These are rough calculators to help you think.
+  The bot could stop working tomorrow — a market structure change, an API outage, or the edge
+  simply disappearing. <strong>Never spend money you haven't withdrawn. Never rely on future
+  bot income for rent or bills.</strong> Get a real CPA once you're past $1K cumulative profit.
+</div>
+
+<!-- Live stats from bot -->
+<div class="section">
+  <h2>Live Bot Stats</h2>
+  <div class="body">
+    <div class="live-fetch" id="liveStats">
+      <span class="live-chip">Live PnL: <strong id="lsLivePnl">loading...</strong></span>
+      <span class="live-chip">Paper PnL: <strong id="lsPaperPnl">—</strong></span>
+      <span class="live-chip">Total Trades: <strong id="lsTrades">—</strong></span>
+      <span class="live-chip">Mode: <strong id="lsMode">—</strong></span>
+    </div>
+  </div>
+</div>
+
+<!-- Tax Calculator -->
+<div class="section">
+  <h2>NC Tax Calculator — Short-Term Capital Gains</h2>
+  <div class="body">
+    <div class="input-row">
+      <div class="input-group">
+        <label>Annual Trading Income</label>
+        <input type="text" id="taxIncome" value="250000" inputmode="numeric" />
+      </div>
+      <div class="input-group">
+        <label>Other Income (W-2, etc)</label>
+        <input type="text" id="taxOther" value="0" inputmode="numeric" />
+      </div>
+      <div class="input-group">
+        <label>Filing Status</label>
+        <select id="taxFiling">
+          <option value="single">Single</option>
+          <option value="married">Married Filing Jointly</option>
+        </select>
+      </div>
+      <button class="calc" onclick="calcTax()">Calculate</button>
+    </div>
+    <div class="result-grid" id="taxResults"></div>
+    <div class="bar-container" id="taxBars"></div>
+    <div id="quarterlyBox" style="margin-top:14px;"></div>
+  </div>
+</div>
+
+<!-- Budget Allocator -->
+<div class="section">
+  <h2>Monthly Budget Allocator — "Bot Could Die Tomorrow" Edition</h2>
+  <div class="body">
+    <div class="input-row">
+      <div class="input-group">
+        <label>Monthly Bot Income (after tax)</label>
+        <input type="text" id="budgetIncome" value="15000" inputmode="numeric" />
+      </div>
+      <div class="input-group">
+        <label>Monthly Expenses (rent, food, etc)</label>
+        <input type="text" id="budgetExpenses" value="2000" inputmode="numeric" />
+      </div>
+      <div class="input-group">
+        <label>Months of runway saved</label>
+        <input type="text" id="budgetRunway" value="0" inputmode="numeric" />
+      </div>
+      <button class="calc" onclick="calcBudget()">Calculate</button>
+    </div>
+    <div class="result-grid" id="budgetResults"></div>
+    <div class="bar-container" id="budgetBars"></div>
+  </div>
+</div>
+
+<!-- Compound Growth Simulator -->
+<div class="section">
+  <h2>Compound Growth — Reinvestment Simulator</h2>
+  <div class="body">
+    <div class="input-row">
+      <div class="input-group">
+        <label>Starting Balance</label>
+        <input type="text" id="compStart" value="10" inputmode="numeric" />
+      </div>
+      <div class="input-group">
+        <label>Daily Return %</label>
+        <input type="text" id="compRate" value="8" inputmode="numeric" />
+      </div>
+      <div class="input-group">
+        <label>Withdrawal / day ($)</label>
+        <input type="text" id="compWithdraw" value="0" inputmode="numeric" />
+      </div>
+      <div class="input-group">
+        <label>Days to simulate</label>
+        <input type="text" id="compDays" value="30" inputmode="numeric" />
+      </div>
+      <button class="calc" onclick="calcCompound()">Simulate</button>
+    </div>
+    <div class="result-grid" id="compResults"></div>
+    <div class="timeline" id="compTimeline"></div>
+  </div>
+</div>
+
+<!-- The Rules -->
+<div class="section">
+  <h2>The Rules — Read This When You're Tempted to Spend</h2>
+  <div class="body">
+    <ol class="rules">
+      <li><strong>The bot WILL stop working eventually.</strong> Every trading edge has a lifespan. Market structure changes, competitors copy your strategy, Kalshi changes fees. Treat every profitable day as a gift, not a guarantee.</li>
+      <li><strong>Build 6 months of expenses in a savings account FIRST.</strong> Before you buy anything, before you upgrade anything. At $2K/month expenses, that's $12K. This is your "bot died" insurance. Do not touch it.</li>
+      <li><strong>Pay estimated taxes quarterly.</strong> April 15, June 15, September 15, January 15. Set aside 30% of every withdrawal immediately. The IRS will penalize you if you don't pay quarterly.</li>
+      <li><strong>Only spend money you've already withdrawn.</strong> Your Kalshi balance is not your money until it's in your bank account. Paper gains mean nothing.</li>
+      <li><strong>Keep your day job until you have 12 months of savings.</strong> Even if the bot makes 10x your salary. The bot could break during a Kalshi outage or API change. Your job is your backup.</li>
+      <li><strong>Never increase your lifestyle based on projected income.</strong> Don't sign a lease you can only afford with the bot running. Don't finance a car. Live on your pre-bot budget + 20% until you have proof of 3+ months sustained income.</li>
+      <li><strong>The compound math is seductive but fragile.</strong> "$10 to $1M in 60 days" assumes zero bad days, zero API outages, zero market changes, and perfect reinvestment. Reality has friction. Plan for half the projected return.</li>
+      <li><strong>Withdraw profits regularly.</strong> Once past your emergency fund, pull out 50% of weekly profits. Real money in a real bank account. The rest can compound in the bot.</li>
+      <li><strong>Track everything.</strong> Know exactly how much you put in, how much you took out, and what your net profit is. You'll need this for taxes and for your own sanity.</li>
+      <li><strong>Get a CPA at $5K cumulative profit.</strong> They'll cost $300-500 and save you from making a $5,000 mistake on your taxes. Worth it.</li>
+    </ol>
+  </div>
+</div>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => '$' + Math.round(n).toLocaleString();
+const fmtD = n => '$' + n.toFixed(2);
+const pct = n => (n * 100).toFixed(1) + '%';
+const num = id => Number($(id).value.replace(/[^0-9.-]/g, '')) || 0;
+
+// Federal brackets 2025 (single)
+const BRACKETS_SINGLE = [
+  [11600, 0.10], [47150 - 11600, 0.12], [100525 - 47150, 0.22],
+  [191950 - 100525, 0.24], [243725 - 191950, 0.32], [609350 - 243725, 0.35],
+  [Infinity, 0.37],
+];
+const BRACKETS_MARRIED = [
+  [23200, 0.10], [94300 - 23200, 0.12], [201050 - 94300, 0.22],
+  [383900 - 201050, 0.24], [487450 - 383900, 0.32], [731200 - 487450, 0.35],
+  [Infinity, 0.37],
+];
+const STD_DED = { single: 15000, married: 30000 };
+const NC_RATE = 0.045;
+
+function fedTax(taxable, brackets) {
+  let tax = 0, rem = taxable;
+  for (const [size, rate] of brackets) {
+    const t = Math.min(rem, size);
+    tax += t * rate;
+    rem -= t;
+    if (rem <= 0) break;
+  }
+  return tax;
+}
+
+function marginalRate(taxable, brackets) {
+  let rem = taxable;
+  let rate = 0.10;
+  for (const [size, r] of brackets) {
+    rate = r;
+    rem -= size;
+    if (rem <= 0) break;
+  }
+  return rate;
+}
+
+function calcTax() {
+  const income = num('taxIncome');
+  const other = num('taxOther');
+  const filing = $('taxFiling').value;
+  const gross = income + other;
+  const ded = STD_DED[filing] || 15000;
+  const taxable = Math.max(0, gross - ded);
+  const brackets = filing === 'married' ? BRACKETS_MARRIED : BRACKETS_SINGLE;
+  const fed = fedTax(taxable, brackets);
+  const nc = taxable * NC_RATE;
+  const total = fed + nc;
+  const effective = gross > 0 ? total / gross : 0;
+  const marginal = marginalRate(taxable, brackets) + NC_RATE;
+  const takeHome = gross - total;
+  const monthly = takeHome / 12;
+  const quarterly = total / 4;
+
+  $('taxResults').innerHTML = [
+    ['Gross Income', fmt(gross), '', ''],
+    ['Federal Tax', fmt(fed), 'neg', `${pct(fed/gross)} of gross`],
+    ['NC State Tax', fmt(nc), 'neg', `4.5% flat`],
+    ['Total Tax', fmt(total), 'neg', `${pct(effective)} effective`],
+    ['Take Home', fmt(takeHome), 'pos', `${fmt(monthly)}/month`],
+    ['Marginal Rate', pct(marginal), 'warn', 'Next dollar taxed at this'],
+  ].map(([k,v,c,m]) => `<div class="rcard"><div class="k">${k}</div><div class="v ${c}">${v}</div><div class="micro">${m}</div></div>`).join('');
+
+  $('taxBars').innerHTML = `
+    <div class="bar-row">
+      <span class="bar-label">Take Home</span>
+      <div class="bar-track">
+        <div class="bar-fill" style="width:${(takeHome/gross*100).toFixed(1)}%;background:var(--green);">${pct(takeHome/gross)}</div>
+        <span class="bar-amount">${fmt(takeHome)}</span>
+      </div>
+    </div>
+    <div class="bar-row">
+      <span class="bar-label">Federal</span>
+      <div class="bar-track">
+        <div class="bar-fill" style="width:${(fed/gross*100).toFixed(1)}%;background:var(--red);">${pct(fed/gross)}</div>
+        <span class="bar-amount">${fmt(fed)}</span>
+      </div>
+    </div>
+    <div class="bar-row">
+      <span class="bar-label">NC State</span>
+      <div class="bar-track">
+        <div class="bar-fill" style="width:${(nc/gross*100).toFixed(1)}%;background:var(--amber);">${pct(nc/gross)}</div>
+        <span class="bar-amount">${fmt(nc)}</span>
+      </div>
+    </div>`;
+
+  $('quarterlyBox').innerHTML = `
+    <div class="rcard" style="border-color:rgba(210,153,34,0.4);">
+      <div class="k">Quarterly Estimated Tax Payments</div>
+      <div class="v warn">${fmt(quarterly)}</div>
+      <div class="micro">
+        Due: Apr 15 (${fmt(quarterly)}) &bull; Jun 15 (${fmt(quarterly)}) &bull; Sep 15 (${fmt(quarterly)}) &bull; Jan 15 (${fmt(quarterly)})
+        <br>Set this aside IMMEDIATELY when you withdraw. Do not spend it.
+      </div>
+    </div>`;
+}
+
+function calcBudget() {
+  const income = num('budgetIncome');
+  const expenses = num('budgetExpenses');
+  const runwayMonths = num('budgetRunway');
+  const targetRunway = 6;
+  const runwayNeeded = Math.max(0, targetRunway - runwayMonths) * expenses;
+  const taxReserve = income * 0.30;
+  const afterTax = income - taxReserve;
+
+  let emergency = 0, invest = 0, fun = 0, reinvest = 0;
+
+  if (runwayMonths < targetRunway) {
+    // Priority: build emergency fund
+    emergency = Math.min(afterTax - expenses, runwayNeeded);
+    const remaining = afterTax - expenses - emergency;
+    reinvest = Math.max(0, remaining * 0.60);
+    invest = Math.max(0, remaining * 0.25);
+    fun = Math.max(0, remaining * 0.15);
+  } else {
+    // Emergency funded — invest and enjoy
+    const surplus = afterTax - expenses;
+    reinvest = surplus * 0.40;
+    invest = surplus * 0.30;
+    fun = surplus * 0.20;
+    emergency = surplus * 0.10; // keep padding
+  }
+
+  const monthsToRunway = runwayNeeded > 0 && emergency > 0 ? Math.ceil(runwayNeeded / emergency) : 0;
+
+  $('budgetResults').innerHTML = [
+    ['Monthly Income', fmt(income), '', 'After-tax bot profits'],
+    ['Tax Reserve (30%)', fmt(taxReserve), 'neg', 'DO NOT TOUCH — quarterly taxes'],
+    ['Living Expenses', fmt(expenses), '', 'Rent, food, bills'],
+    ['Emergency Fund', runwayMonths >= targetRunway ? 'FUNDED' : `${runwayMonths}/${targetRunway} months`, runwayMonths >= targetRunway ? 'pos' : 'warn', runwayMonths >= targetRunway ? `${fmt(targetRunway * expenses)} saved` : `Need ${fmt(runwayNeeded)} more`],
+  ].map(([k,v,c,m]) => `<div class="rcard"><div class="k">${k}</div><div class="v ${c}">${v}</div><div class="micro">${m}</div></div>`).join('');
+
+  const total = taxReserve + expenses + emergency + reinvest + invest + fun;
+  const items = [
+    ['Tax reserve', taxReserve, 'var(--red)'],
+    ['Expenses', expenses, 'var(--muted)'],
+    ['Emergency fund', emergency, 'var(--amber)'],
+    ['Reinvest in bot', reinvest, 'var(--blue)'],
+    ['Long-term invest', invest, 'var(--green)'],
+    ['Fun money', fun, '#a371f7'],
+  ];
+
+  $('budgetBars').innerHTML = items.map(([label, amount, color]) => {
+    const w = total > 0 ? (amount / total * 100).toFixed(1) : 0;
+    return `<div class="bar-row">
+      <span class="bar-label">${label}</span>
+      <div class="bar-track">
+        <div class="bar-fill" style="width:${w}%;background:${color};${amount < 1 ? 'min-width:0' : ''}">${w > 8 ? pct(amount/income) : ''}</div>
+        <span class="bar-amount">${fmt(amount)}</span>
+      </div>
+    </div>`;
+  }).join('') + (monthsToRunway > 0 ? `<div style="margin-top:10px;font-size:.82rem;color:var(--amber);">At this rate, emergency fund fully funded in ~${monthsToRunway} month${monthsToRunway>1?'s':''}.</div>` : '');
+}
+
+function calcCompound() {
+  const start = num('compStart');
+  const rate = num('compRate') / 100;
+  const withdraw = num('compWithdraw');
+  const days = Math.min(num('compDays'), 365);
+
+  let balance = start;
+  let totalWithdrawn = 0;
+  let totalProfit = 0;
+  let peak = start;
+  const log = [];
+
+  for (let d = 1; d <= days; d++) {
+    const dayProfit = balance * rate;
+    totalProfit += dayProfit;
+    balance += dayProfit;
+    const w = Math.min(withdraw, Math.max(0, balance - start));
+    balance -= w;
+    totalWithdrawn += w;
+    if (balance > peak) peak = balance;
+
+    if (d <= 7 || d % 7 === 0 || d === days) {
+      log.push({ d, balance, dayProfit, totalWithdrawn, totalProfit });
+    }
+  }
+
+  $('compResults').innerHTML = [
+    ['Final Balance', fmt(balance), 'pos', `Started at ${fmt(start)}`],
+    ['Total Profit', fmt(totalProfit), 'pos', `${days} days`],
+    ['Total Withdrawn', fmt(totalWithdrawn), '', 'Cash in your pocket'],
+    ['Peak Balance', fmt(peak), '', ''],
+  ].map(([k,v,c,m]) => `<div class="rcard"><div class="k">${k}</div><div class="v ${c}">${v}</div><div class="micro">${m}</div></div>`).join('');
+
+  $('compTimeline').innerHTML = `
+    <div style="font-size:.74rem;color:var(--muted);margin-bottom:8px;">DAY-BY-DAY PROJECTION</div>
+    ${log.map(l => `<div class="tl-item">
+      <span class="tl-date">Day ${l.d}</span>
+      <span class="tl-amount pos">${fmt(l.balance)}</span>
+      <span class="tl-note">+${fmt(l.dayProfit)} today &bull; ${fmt(l.totalWithdrawn)} withdrawn total</span>
+    </div>`).join('')}
+  `;
+}
+
+// Fetch live stats on load
+async function fetchLive() {
+  try {
+    const r = await fetch('/api/summary?all=true');
+    const d = await r.json();
+    $('lsLivePnl').textContent = '$' + (d.live_pnl || 0).toFixed(2);
+    $('lsLivePnl').className = (d.live_pnl || 0) >= 0 ? 'pos' : 'neg';
+    $('lsPaperPnl').textContent = '$' + (d.paper_pnl || 0).toFixed(2);
+    $('lsTrades').textContent = d.total_trades || 0;
+    $('lsMode').textContent = (d.trading_mode || 'unknown').toUpperCase();
+    $('lsMode').className = d.trading_mode === 'live' ? 'neg' : '';
+  } catch(e) { $('lsLivePnl').textContent = 'offline'; }
+}
+
+fetchLive();
+setInterval(fetchLive, 30000);
+calcTax();
+calcBudget();
+calcCompound();
+</script>
+</body>
+</html>

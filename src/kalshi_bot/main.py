@@ -504,12 +504,17 @@ async def run_bot(settings: Settings) -> None:
     ws_feed = KalshiOrderbookFeed(settings, eval_trigger=eval_trigger)
     executor.attach_orderbook_source(ws_feed.get_orderbook)
 
+    _bankroll_sim: Decimal | None = None
+    if dry_run:
+        _bankroll_sim = Decimal(str(settings.paper_balance))
+    elif settings.bankroll_override > 0:
+        _bankroll_sim = Decimal(str(settings.bankroll_override))
     await cached.refresh_balance(
         client,
         ttl_s=0.0,
-        simulated_balance=Decimal(str(settings.paper_balance)) if dry_run else None,
+        simulated_balance=_bankroll_sim,
     )
-    if not dry_run and cached.balance <= 0:
+    if not dry_run and _bankroll_sim is None and cached.balance <= 0:
         logger.critical(
             "live_mode_zero_balance — refusing to start. "
             "Check API credentials and account funding.",
@@ -902,6 +907,8 @@ async def _slow_housekeeping_loop(
     # double-analysis if the same closed window gets popped twice; does NOT
     # gate cadence — every newly-closed window gets analyzed.
     analyzed_windows: set[tuple[str, str]] = set()
+    ANALYSIS_INTERVAL_S = 3600.0  # AI analysis at most once per hour
+    last_analysis_mono: float = 0.0
     stale_alert_state: dict[str, bool] = {}
     last_heartbeat_mono: float = 0.0
     last_orphan_check_mono: float = 0.0
@@ -936,11 +943,14 @@ async def _slow_housekeeping_loop(
                 await _settle_paper_positions(executor, tracker, alerter)
             await _check_settlements(client, executor, alerter)
 
+            _br_sim: Decimal | None = None
+            if settings.trading_mode == "paper":
+                _br_sim = Decimal(str(settings.paper_balance))
+            elif settings.bankroll_override > 0:
+                _br_sim = Decimal(str(settings.bankroll_override))
             await cached.refresh_balance(
                 client,
-                simulated_balance=Decimal(str(settings.paper_balance))
-                if settings.trading_mode == "paper"
-                else None,
+                simulated_balance=_br_sim,
             )
             await cached.refresh_positions(client, risk)
             await cached.refresh_markets(client, tracker, settings)
@@ -1320,8 +1330,13 @@ async def _slow_housekeeping_loop(
                     )
 
                 dedupe_key = (symbol, closed_window.close_time.isoformat())
-                if dedupe_key not in analyzed_windows:
+                now_analysis = time.monotonic()
+                if (
+                    dedupe_key not in analyzed_windows
+                    and now_analysis - last_analysis_mono >= ANALYSIS_INTERVAL_S
+                ):
                     analyzed_windows.add(dedupe_key)
+                    last_analysis_mono = now_analysis
                     try:
                         await asyncio.wait_for(
                             _run_window_analysis(

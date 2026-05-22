@@ -135,6 +135,26 @@ def api_summary(all: bool = False) -> dict[str, Any]:  # noqa: A002
     runtime = _read_live_state()
     summary["trading_mode"] = runtime.get("trading_mode", "unknown")
     summary["balance"] = runtime.get("balance")
+
+    # Split PnL by paper vs live (paper order_ids start with "PAPER-")
+    split_rows = _query(
+        f"""SELECT
+             CASE WHEN order_id LIKE 'PAPER-%%' THEN 'paper' ELSE 'live' END as mode,
+             COUNT(*) as trades,
+             SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+             SUM(CASE WHEN CAST(pnl AS REAL) < 0 THEN 1 ELSE 0 END) as losses,
+             COALESCE(SUM(CAST(pnl AS REAL)), 0) as pnl
+           FROM trades {where}
+           GROUP BY mode""",  # noqa: S608
+        params,
+    )
+    for row in split_rows:
+        mode = row["mode"]
+        summary[f"{mode}_trades"] = row["trades"]
+        summary[f"{mode}_wins"] = row["wins"]
+        summary[f"{mode}_losses"] = row["losses"]
+        summary[f"{mode}_pnl"] = row["pnl"]
+
     return summary
 
 
@@ -1200,6 +1220,12 @@ def api_logs_stats(max_bytes: int = _LOG_SCAN_CAP_BYTES) -> dict[str, Any]:
 @app.get("/", response_class=HTMLResponse)
 def dashboard() -> str:
     html_path = Path(__file__).parent / "dashboard.html"
+    return html_path.read_text(encoding="utf-8")
+
+
+@app.get("/finance", response_class=HTMLResponse)
+def finance() -> str:
+    html_path = Path(__file__).parent / "finance.html"
     return html_path.read_text(encoding="utf-8")
 
 

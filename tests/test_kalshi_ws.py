@@ -250,3 +250,21 @@ def test_resync_blocks_stale_deltas_until_fresh_snapshot() -> None:
     orderbook, _ = result
     assert orderbook.yes_levels[0].quantity == 70
     assert feed.diagnostics()["negative_qty"] == 0
+
+
+def test_parse_price_to_cents_handling() -> None:
+    from kalshi_bot.client.kalshi_ws import _parse_price_to_cents
+
+    # Bids of 1 cent can be represented as "1" in live WS, while dollar strings like "0.01" are also possible.
+    assert _parse_price_to_cents("1") == 1
+    assert _parse_price_to_cents("0.01") == 1
+
+    # 45 cents should parse as 45 cents, whether representation is "45" or "0.45"
+    assert _parse_price_to_cents("45") == 45
+    assert _parse_price_to_cents("0.45") == 45
+
+    # Invalid inputs
+    assert _parse_price_to_cents("-5") is None
+    assert _parse_price_to_cents("abc") is None
+    assert _parse_price_to_cents(None) is None
+

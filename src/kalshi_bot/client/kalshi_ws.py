@@ -584,7 +584,7 @@ def _parse_price_to_cents(raw_price: Any) -> int | None:
         return None
     if value < 0:
         return None
-    if value <= 1.0:
+    if value < 1.0:
         return int(round(value * 100))
     return int(round(value))
 
