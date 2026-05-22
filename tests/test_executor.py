@@ -466,7 +466,7 @@ async def test_reconcile_orphans_cleans_old_trades(tmp_path: Path) -> None:
     conn.execute(
         """INSERT INTO trades (timestamp, order_id, ticker, symbol, strategy,
            side, contracts, price, edge, net_edge, pnl, fees)
-           VALUES (datetime('now', '-2 hours'), 'old-orphan', 'KXBTC-OLD',
+           VALUES (strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now', '-2 hours'), 'old-orphan', 'KXBTC-OLD',
                    'BTC', 'momentum', 'no', 5, '0.50', '0.1', '0.08', NULL, NULL)"""
     )
     conn.commit()
@@ -513,7 +513,7 @@ async def test_reconcile_orphans_preserves_recent(tmp_path: Path) -> None:
     conn.execute(
         """INSERT INTO trades (timestamp, order_id, ticker, symbol, strategy,
            side, contracts, price, edge, net_edge, pnl, fees)
-           VALUES (datetime('now', '-5 minutes'), 'recent-trade', 'KXBTC-NEW',
+           VALUES (strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now', '-5 minutes'), 'recent-trade', 'KXBTC-NEW',
                    'BTC', 'momentum', 'no', 5, '0.50', '0.1', '0.08', NULL, NULL)"""
     )
     conn.commit()

@@ -148,21 +148,25 @@ class Executor:
         (skips orders the executor is still actively tracking).
         """
         # Exclude order_ids that are still tracked in memory
+        # Use strftime with 'T' separator to match ISO 8601 timestamps in DB.
+        # SQLite's datetime() returns 'YYYY-MM-DD HH:MM:SS' (space separator)
+        # but our timestamps use 'T', so naive string comparison fails.
+        cutoff = "strftime('%Y-%m-%dT%H:%M:%S', 'now', '-30 minutes')"
         active_oids = set(self._orders.keys())
         if active_oids:
             placeholders = ",".join("?" for _ in active_oids)
             sql = f"""UPDATE trades
                       SET pnl = '0', exit_reason = 'orphan_reconciled'
                       WHERE pnl IS NULL AND fees IS NULL
-                        AND timestamp < datetime('now', '-30 minutes')
+                        AND timestamp < {cutoff}
                         AND order_id NOT IN ({placeholders})"""  # noqa: S608
             updated = self._db.execute(sql, tuple(active_oids)).rowcount
         else:
             updated = self._db.execute(
-                """UPDATE trades
+                f"""UPDATE trades
                    SET pnl = '0', exit_reason = 'orphan_reconciled'
                    WHERE pnl IS NULL AND fees IS NULL
-                     AND timestamp < datetime('now', '-30 minutes')""",
+                     AND timestamp < {cutoff}""",
             ).rowcount
         if updated:
             logger.info("reconcile_orphans cleaned=%d stale trades", updated)
