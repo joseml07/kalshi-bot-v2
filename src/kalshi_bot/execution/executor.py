@@ -739,6 +739,8 @@ class Executor:
                 side=order.signal.side.value,
                 price_dollars=sell_order_price,
                 count=order.contracts,
+                max_attempts=1,
+                timeout_override=4.0,
             )
             sell_oid = str(sell_resp["order_id"])
             order.exit_order_id = sell_oid

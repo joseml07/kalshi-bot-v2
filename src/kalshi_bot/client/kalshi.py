@@ -74,6 +74,8 @@ class KalshiClient:
         params: dict[str, str] | None = None,
         json_body: dict[str, Any] | None = None,
         is_write: bool = False,
+        max_attempts: int = 3,
+        timeout_override: float | None = None,
     ) -> Any:
         """Make an authenticated API request with rate limiting and retries."""
         limiter = self._write_limiter if is_write else self._read_limiter
@@ -81,7 +83,7 @@ class KalshiClient:
         last_resp: httpx.Response | None = None
         last_error: Exception | None = None
 
-        for attempt in range(3):
+        for attempt in range(max_attempts):
             await limiter.acquire()
             if is_write:
                 self._record_write_call()
@@ -90,7 +92,8 @@ class KalshiClient:
             headers = self._auth_headers(method, f"/trade-api/v2{path}")
             try:
                 resp = await self._client.request(
-                    method, url, headers=headers, params=params, json=json_body
+                    method, url, headers=headers, params=params, json=json_body,
+                    timeout=timeout_override,
                 )
             except httpx.RequestError as exc:
                 last_error = exc
@@ -183,6 +186,9 @@ class KalshiClient:
         side: str,
         price_dollars: Decimal,
         count: int,
+        *,
+        max_attempts: int = 3,
+        timeout_override: float | None = None,
     ) -> dict[str, Any]:
         """Place a limit order.
 
@@ -192,6 +198,8 @@ class KalshiClient:
             side: "yes" or "no".
             price_dollars: Price as decimal dollars (e.g., Decimal("0.45")).
             count: Number of contracts.
+            max_attempts: Number of retry attempts (default 3).
+            timeout_override: Per-request timeout in seconds (None = client default).
 
         Returns:
             Order response dict.
@@ -209,7 +217,8 @@ class KalshiClient:
         # Remove None price field
         body = {k: v for k, v in body.items() if v is not None}
         result = await self._request(
-            "POST", "/portfolio/orders", json_body=body, is_write=True
+            "POST", "/portfolio/orders", json_body=body, is_write=True,
+            max_attempts=max_attempts, timeout_override=timeout_override,
         )
         order: dict[str, Any] = result["order"]
         return order

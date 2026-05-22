@@ -259,8 +259,8 @@ def chart_calendar(
     days_in_month = _calendar.monthrange(year, month)[1]
     max_abs = 0.0
     month_total = 0.0
-    for d in range(1, days_in_month + 1):
-        key = f"{year}-{month:02d}-{d:02d}"
+    for day_num in range(1, days_in_month + 1):
+        key = f"{year}-{month:02d}-{day_num:02d}"
         if key in by_day:
             abs_pnl = abs(by_day[key]["pnl"])
             if abs_pnl > max_abs:
@@ -273,15 +273,16 @@ def chart_calendar(
     # Python Monday=0; we need Sunday=0
     first_dow = (first_dow + 1) % 7
 
-    for d in range(1, days_in_month + 1):
-        col = (first_dow + d - 1) % 7
-        row = (first_dow + d - 1) // 7
+    for day_num in range(1, days_in_month + 1):
+        col = (first_dow + day_num - 1) % 7
+        row = (first_dow + day_num - 1) // 7
         x = col
         y = -row - 0.5
 
-        key = f"{year}-{month:02d}-{d:02d}"
+        key = f"{year}-{month:02d}-{day_num:02d}"
         info = by_day.get(key)
 
+        face: str | tuple[float, float, float, float]
         if info is None:
             face = "#1a2030"
             pnl_text = ""
@@ -305,9 +306,9 @@ def chart_calendar(
             edgecolor="#2d3748", linewidth=0.5,
         )
         ax.add_patch(rect)
-        ax.text(x + 0.14, y + 0.28, str(d), ha="left", va="center",
+        ax.text(x + 0.14, y + 0.28, str(day_num), ha="left", va="center",
                 fontsize=7, color="#9ba7b9")
-        if pnl_text:
+        if pnl_text and info is not None:
             ax.text(x + 0.5, y - 0.02, pnl_text, ha="center", va="center",
                     fontsize=9, fontweight="bold",
                     color="#56d364" if info["pnl"] >= 0 else "#ff8882")

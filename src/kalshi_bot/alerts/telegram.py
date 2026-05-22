@@ -924,8 +924,8 @@ def make_calendar_command(db_path: str = "trades.db") -> ArgCommandHandler:
         trading_days = 0
 
         day_data: list[dict[str, Any] | None] = []
-        for d in range(1, days_in_month + 1):
-            key = f"{year}-{month:02d}-{d:02d}"
+        for day_num in range(1, days_in_month + 1):
+            key = f"{year}-{month:02d}-{day_num:02d}"
             info = by_day.get(key)
             day_data.append(info)
             if info:
@@ -954,11 +954,11 @@ def make_calendar_command(db_path: str = "trades.db") -> ArgCommandHandler:
         for _ in range(first_dow):
             cells.append("   ")
 
-        for d in range(1, days_in_month + 1):
-            info = day_data[d - 1]
+        for day_num in range(1, days_in_month + 1):
+            info = day_data[day_num - 1]
             if info is None:
                 # No trades — just the day number, dimmed
-                cells.append(f"{d:>3}")
+                cells.append(f"{day_num:>3}")
             else:
                 if info["pnl"] > 0:
                     marker = "🟩"
@@ -966,7 +966,7 @@ def make_calendar_command(db_path: str = "trades.db") -> ArgCommandHandler:
                     marker = "🟥"
                 else:
                     marker = "⬜"
-                cells.append(f"{marker}{d:<2}")
+                cells.append(f"{marker}{day_num:<2}")
 
         # Pad to complete the last week
         while len(cells) % 7 != 0:
@@ -981,14 +981,14 @@ def make_calendar_command(db_path: str = "trades.db") -> ArgCommandHandler:
 
         # Detail lines for days with trades
         lines.append("<b>Daily Breakdown</b>")
-        for d in range(1, days_in_month + 1):
-            info = day_data[d - 1]
+        for day_num in range(1, days_in_month + 1):
+            info = day_data[day_num - 1]
             if info is None:
                 continue
             sign = "+" if info["pnl"] >= 0 else ""
             icon = "🟢" if info["pnl"] > 0 else "🔴" if info["pnl"] < 0 else "⚪"
             lines.append(
-                f"  {icon} {d:>2} — {sign}${info['pnl']:.2f}"
+                f"  {icon} {day_num:>2} — {sign}${info['pnl']:.2f}"
                 f"  ({info['trades']}t {info['wins']}w/{info['losses']}l)"
             )
 

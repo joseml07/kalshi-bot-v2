@@ -845,6 +845,19 @@ async def _fast_eval_loop(
                         executor.log_signal(
                             signal, "skip_sizing", "sizing returned 0 contracts"
                         )
+
+                    # --- Exit evaluation (fast path) ---
+                    # Check exits on every eval tick (~200ms) instead of
+                    # waiting for the 5s housekeeping cycle. The time_exit
+                    # fires at <30s remaining; 5s jitter was 17% timing error
+                    # on the bot's most profitable operation.
+                    best_yes_bid = orderbook.best_yes_bid
+                    best_no_bid = orderbook.best_no_bid
+                    await _evaluate_exits(
+                        executor, ticker,
+                        best_yes_bid, best_no_bid,
+                        alerter, window,
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -1189,15 +1202,6 @@ async def _slow_housekeeping_loop(
                 )
                 live_state["symbols"][symbol]["model_prob"] = snap_prob_live
                 live_state["symbols"][symbol]["dynamic_k"] = dynamic_k
-
-                await _evaluate_exits(
-                    executor,
-                    ticker,
-                    best_bid,
-                    best_no_bid,
-                    alerter,
-                    window,
-                )
 
                 if settings.strategy_name == "lwm":
                     signal_for_record = evaluate_lwm(
