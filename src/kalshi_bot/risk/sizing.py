@@ -12,7 +12,7 @@ from kalshi_bot.strategy.asset_config import SignalStrength, get_asset_config
 logger = structlog.get_logger(__name__)
 
 MIN_CONTRACTS = 1
-MAX_CONTRACTS = 999
+MAX_CONTRACTS = 10
 MAX_COST_DOLLARS = Decimal("10.00")
 
 DEFAULT_KELLY_FRACTION = 0.25

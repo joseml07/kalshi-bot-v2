@@ -21,10 +21,10 @@ def test_kelly_fraction_positive_edge() -> None:
     assert frac > 0
 
 
-def test_quarter_kelly_size_capped_at_max_cost() -> None:
+def test_quarter_kelly_size_capped_at_max_contracts() -> None:
     size = quarter_kelly_size(0.95, 0.05, Decimal("10000"))
-    # Capped by MAX_COST_DOLLARS ($10) / buffered price (0.05+0.03=0.08) = 125
-    assert size == 125
+    # Capped by MAX_CONTRACTS (10)
+    assert size == MAX_CONTRACTS
 
 
 def test_quarter_kelly_size_returns_zero_when_not_plus_ev() -> None:
