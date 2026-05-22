@@ -12,8 +12,8 @@ from kalshi_bot.strategy.asset_config import SignalStrength, get_asset_config
 logger = structlog.get_logger(__name__)
 
 MIN_CONTRACTS = 1
-MAX_CONTRACTS = 10
-MAX_COST_DOLLARS = Decimal("25.00")
+MAX_CONTRACTS = 999
+MAX_COST_DOLLARS = Decimal("10.00")
 
 DEFAULT_KELLY_FRACTION = 0.25
 
@@ -86,7 +86,10 @@ def kelly_size(
         return 0
     contracts = math.floor(dollar_amount / price)
 
-    max_by_cost = math.floor(float(MAX_COST_DOLLARS) / price)
+    # Use price + 3c buffer for cost cap so the limit order (which adds
+    # a slippage buffer) doesn't exceed MAX_COST_DOLLARS on Kalshi.
+    buffered_price = min(price + 0.03, 0.99)
+    max_by_cost = math.floor(float(MAX_COST_DOLLARS) / buffered_price)
     contracts = min(contracts, max_by_cost, MAX_CONTRACTS)
     if contracts < MIN_CONTRACTS:
         # Kelly said bet something (dollar_amount > 0) but the floor rounded

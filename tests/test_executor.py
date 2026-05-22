@@ -185,7 +185,7 @@ async def test_promote_to_taker_uses_fresh_price(tmp_path: Path) -> None:
 
     sig = _signal(side=Side.YES).model_copy(
         update={
-            "real_prob": 0.70,
+            "real_prob": 0.72,
             "route": "maker",
             "taker_price": Decimal("0.62"),
             "kalshi_price": Decimal("0.60"),
@@ -206,8 +206,8 @@ async def test_promote_to_taker_uses_fresh_price(tmp_path: Path) -> None:
     await executor.promote_to_taker()
 
     assert len(client.calls) == 2
-    # _fresh_taker_price now adds 2c slippage buffer
-    expected_price = fresh_price + Decimal("0.02")
+    # _fresh_taker_price now adds 3c slippage buffer
+    expected_price = fresh_price + Decimal("0.03")
     assert Decimal(str(client.calls[-1]["price_dollars"])) == expected_price
     promoted_orders = [o for o in executor.pending_orders if o.route == "taker_promoted"]
     assert len(promoted_orders) == 1

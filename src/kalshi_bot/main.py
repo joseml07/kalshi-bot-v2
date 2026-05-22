@@ -1412,6 +1412,7 @@ async def _check_settlements(
             data = await client._request("GET", f"/markets/{ticker}")
             market = data["market"]
         except Exception:
+            logger.warning("settlement_check_failed ticker=%s", ticker, exc_info=True)
             continue
         if market.get("status") not in ("determined", "settled"):
             continue

@@ -36,7 +36,7 @@ PROMOTE_FRESH_ORDERBOOK_MAX_AGE_S = 5.0
 PROMOTE_BIG_PRICE_MOVE = 0.03
 
 # Taker execution improvements
-TAKER_SLIPPAGE_BUFFER = Decimal("0.02")  # pay up to 2c worse to guarantee fill
+TAKER_SLIPPAGE_BUFFER = Decimal("0.03")  # pay up to 3c worse to guarantee fill
 EXIT_SELL_BUFFER = Decimal("0.01")       # sell 1c below bid to guarantee exit fill
 MIN_PROMOTE_DEPTH = 15                   # contracts visible before taker promo
 TAKER_FILL_HORIZON_S = 120               # longer timeout for taker orders
@@ -81,6 +81,10 @@ class TrackedOrder:
         self.maker_timeout: int = maker_timeout_for_strength(
             signal.signal_strength, signal.symbol, global_horizon=90
         )
+        # Whether this trade has been logged to the DB.  Live orders are
+        # only logged after fill confirmation so that canceled/unfilled orders
+        # never pollute the trades table.
+        self.db_logged: bool = False
         # Exit sell tracking (populated when state transitions to EXITING)
         self.exit_order_id: str | None = None
         self.exit_price: Decimal | None = None
@@ -209,6 +213,7 @@ class Executor:
             self._orders[order_id] = tracked
             self._risk.record_fill(signal.ticker, side=signal.side.value)
             self._log_trade(signal, order_id, contracts, signal.kalshi_price, None)
+            tracked.db_logged = True
             return tracked
 
         # Reserve the ticker BEFORE awaiting place_order. If we wait until
@@ -217,12 +222,21 @@ class Executor:
         # the HTTP response — the 2026-04-16 live incident placed ~25
         # duplicate orders against a single signal for exactly this reason.
         self._risk.record_fill(signal.ticker, side=signal.side.value)
+
+        # For live taker orders, add a slippage buffer so the limit price
+        # crosses the spread even if the ask moved slightly since the signal.
+        entry_price = signal.kalshi_price
+        route = signal.route if hasattr(signal, "route") else "taker"
+        if route != "maker":
+            entry_price = min(
+                signal.kalshi_price + TAKER_SLIPPAGE_BUFFER, Decimal("0.99")
+            )
         try:
             order_resp = await self._client.place_order(
                 ticker=signal.ticker,
                 action="buy",
                 side=signal.side.value,
-                price_dollars=signal.kalshi_price,
+                price_dollars=entry_price,
                 count=contracts,
             )
         except Exception:
@@ -236,13 +250,15 @@ class Executor:
             price=signal.kalshi_price,
         )
         self._orders[order_id] = tracked
-        self._log_trade(signal, order_id, contracts, signal.kalshi_price, None)
+        # Do NOT log to DB here — wait for fill confirmation in
+        # check_pending_fills() so canceled orders never pollute trades.
         logger.info(
-            "Placed %s %s x%d @ %s order_id=%s",
+            "Placed %s %s x%d @ %s (limit=%s) order_id=%s",
             signal.side.value,
             signal.ticker,
             contracts,
             signal.kalshi_price,
+            entry_price,
             order_id,
         )
         return tracked
@@ -288,6 +304,12 @@ class Executor:
                         "contracts": order.contracts,
                     },
                 )
+                # Log to DB now that the fill is confirmed.
+                if not order.db_logged:
+                    self._log_trade(
+                        order.signal, oid, order.contracts, order.price, None,
+                    )
+                    order.db_logged = True
                 logger.info(
                     "Confirmed fill: %s (%s) @ %s",
                     oid,
@@ -524,13 +546,7 @@ class Executor:
                         else TAKER_FILL_HORIZON_S
                     )
                     self._orders[new_oid] = new_order
-                    self._log_trade(
-                        order.signal,
-                        new_oid,
-                        target_contracts,
-                        fresh_taker_price,
-                        None,
-                    )
+                    # Don't log promoted taker to DB until fill confirmed
                     logger.info(
                         "Promoted to taker: %s -> %s @ %s x%d (fresh, stale was %s, edge=%.4f)",
                         oid,
@@ -629,7 +645,8 @@ class Executor:
                 await self._client.cancel_order(oid)
                 order.state = OrderState.CANCELLED
                 self._risk.record_settlement(order.signal.ticker, Decimal("0"))
-                self._update_trade_pnl(oid, Decimal("0"))
+                if order.db_logged:
+                    self._update_trade_pnl(oid, Decimal("0"))
                 logger.info("Cancelled stale order %s (%s)", oid, order.signal.ticker)
                 cancelled.append(order)
             except Exception:
@@ -638,6 +655,11 @@ class Executor:
                 self._risk.record_fill(
                     order.signal.ticker, side=order.signal.side.value
                 )
+                if not order.db_logged:
+                    self._log_trade(
+                        order.signal, oid, order.contracts, order.price, None,
+                    )
+                    order.db_logged = True
                 logger.info(
                     "Order %s (%s) already filled or settled — registered fill",
                     oid,
@@ -671,6 +693,15 @@ class Executor:
             evs = self._risk.record_settlement(ticker, pnl, side=order.signal.side.value)
             if evs:
                 events.append(evs)
+            # Ensure the trade exists in DB before updating PnL.
+            # Live orders are only logged on fill confirmation; if
+            # settlement races ahead of check_pending_fills we must
+            # log the entry first.
+            if not order.db_logged:
+                self._log_trade(
+                    order.signal, oid, order.contracts, order.price, None,
+                )
+                order.db_logged = True
             self._update_trade_pnl(oid, pnl, entry_fee)
             logger.info(
                 "Settled %s side=%s result=%s won=%s pnl=%s fees=%s",
