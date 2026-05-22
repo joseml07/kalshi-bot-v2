@@ -8,6 +8,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
@@ -100,6 +101,14 @@ class TrackedOrder:
         return float(total / self.contracts)
 
 
+@dataclass(frozen=True)
+class SubmitResult:
+    """Outcome of a submit attempt."""
+
+    order: TrackedOrder | None
+    skip_reason: str | None = None
+
+
 class Executor:
     """Manages order lifecycle: place, monitor, cancel stale, log."""
 
@@ -172,11 +181,11 @@ class Executor:
             logger.info("reconcile_orphans cleaned=%d stale trades", updated)
         self._db.commit()
 
-    async def submit(self, signal: Signal, bankroll: Decimal) -> TrackedOrder | None:
+    async def submit(self, signal: Signal, bankroll: Decimal) -> SubmitResult:
         """Size, place, and track an order for the given signal.
 
-        Returns the TrackedOrder on success, or None if sizing returns 0
-        or dry_run is active.
+        Returns a SubmitResult with the TrackedOrder on success, or a
+        skip_reason when placement is skipped.
         """
         price = float(signal.kalshi_price)
         win_prob = (
@@ -192,8 +201,18 @@ class Executor:
             signal_strength=signal.signal_strength, symbol=signal.symbol,
         )
         if contracts == 0:
-            logger.debug("Sizing returned 0 contracts for %s — skipping", signal.ticker)
-            return None
+            logger.info(
+                "submit_sizing_zero",
+                extra={
+                    "ticker": signal.ticker,
+                    "side": signal.side.value,
+                    "win_prob": win_prob,
+                    "price": price,
+                    "bankroll": float(bankroll),
+                    "kelly_fraction": float(fraction),
+                },
+            )
+            return SubmitResult(None, "sizing_zero")
 
         if self._dry_run:
             logger.info(
@@ -218,11 +237,13 @@ class Executor:
             self._risk.record_fill(signal.ticker, side=signal.side.value)
             self._log_trade(signal, order_id, contracts, signal.kalshi_price, None)
             tracked.db_logged = True
-            return tracked
+            return SubmitResult(tracked)
 
         # Use fresh orderbook price at placement time instead of signal's stale price
         entry_price = signal.kalshi_price
         route = signal.route if hasattr(signal, "route") else "taker"
+        entry_price_source = "signal"
+        orderbook_age_s: float | None = None
         if route != "maker" and self._get_orderbook is not None:
             snapshot = self._get_orderbook(signal.ticker)
             if snapshot is not None:
@@ -235,17 +256,32 @@ class Executor:
                         fresh_ask = fresh_book.best_no_ask
                     if fresh_ask is not None:
                         entry_price = fresh_ask
+                        entry_price_source = "orderbook_ask"
+                        orderbook_age_s = age_s
 
         if route != "maker":
             entry_price = min(entry_price + TAKER_SLIPPAGE_BUFFER, Decimal("0.99"))
+            entry_price_source = f"{entry_price_source}_slippage"
 
         # Re-check edge with fresh price to avoid overpaying
         win_prob = (
             signal.real_prob if signal.side.value == "yes" else 1 - signal.real_prob
         )
         if float(entry_price) >= win_prob:
-            logger.info("Edge gone at fresh price %s, skipping", entry_price)
-            return None
+            logger.info(
+                "submit_edge_gone",
+                extra={
+                    "ticker": signal.ticker,
+                    "side": signal.side.value,
+                    "signal_price": float(signal.kalshi_price),
+                    "entry_price": float(entry_price),
+                    "win_prob": win_prob,
+                    "route": route,
+                    "entry_price_source": entry_price_source,
+                    "orderbook_age_s": orderbook_age_s,
+                },
+            )
+            return SubmitResult(None, "edge_gone")
 
         # Reserve the ticker BEFORE awaiting place_order. If we wait until
         # the order_id comes back, a concurrent eval tick can slip past the
@@ -269,11 +305,16 @@ class Executor:
             signal=signal,
             order_id=order_id,
             contracts=contracts,
-            price=signal.kalshi_price,
+            price=entry_price,
         )
         self._orders[order_id] = tracked
         # Do NOT log to DB here — wait for fill confirmation in
         # check_pending_fills() so canceled orders never pollute trades.
+        signal_age_s = (
+            (datetime.now(timezone.utc) - signal.timestamp).total_seconds()
+            if isinstance(signal.timestamp, datetime)
+            else None
+        )
         logger.info(
             "Placed %s %s x%d @ %s (limit=%s) order_id=%s",
             signal.side.value,
@@ -282,8 +323,17 @@ class Executor:
             signal.kalshi_price,
             entry_price,
             order_id,
+            extra={
+                "route": route,
+                "signal_price": float(signal.kalshi_price),
+                "entry_price": float(entry_price),
+                "entry_price_source": entry_price_source,
+                "orderbook_age_s": orderbook_age_s,
+                "signal_age_s": signal_age_s,
+                "contracts": contracts,
+            },
         )
-        return tracked
+        return SubmitResult(tracked)
 
     async def check_pending_fills(self) -> None:
         """Poll Kalshi for pending orders and mark filled ones.

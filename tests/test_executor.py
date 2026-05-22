@@ -90,8 +90,9 @@ async def test_live_submit_locks_side_before_network(tmp_path: Path) -> None:
     )
 
     sig = _signal()
-    result = await executor.submit(sig, Decimal("100"))
-    assert result is not None
+    submit_result = await executor.submit(sig, Decimal("100"))
+    order = submit_result.order
+    assert order is not None
     assert len(client.calls) == 1
 
     # Risk must veto any further signal on this ticker, regardless of side.
@@ -154,7 +155,8 @@ async def test_promote_to_taker_aborts_when_edge_gone(
             "kalshi_price": Decimal("0.60"),
         }
     )
-    order = await executor.submit(sig, Decimal("100"))
+    submit_result = await executor.submit(sig, Decimal("100"))
+    order = submit_result.order
     assert order is not None
     order.placed_at = time.monotonic() - (order.maker_timeout + 1)
 
@@ -191,7 +193,8 @@ async def test_promote_to_taker_uses_fresh_price(tmp_path: Path) -> None:
             "kalshi_price": Decimal("0.60"),
         }
     )
-    order = await executor.submit(sig, Decimal("100"))
+    submit_result = await executor.submit(sig, Decimal("100"))
+    order = submit_result.order
     assert order is not None
     order.placed_at = time.monotonic() - (order.maker_timeout + 1)
 
@@ -240,7 +243,8 @@ async def test_promote_to_taker_skips_when_no_orderbook(
             "kalshi_price": Decimal("0.60"),
         }
     )
-    order = await executor.submit(sig, Decimal("100"))
+    submit_result = await executor.submit(sig, Decimal("100"))
+    order = submit_result.order
     assert order is not None
     order.placed_at = time.monotonic() - (order.maker_timeout + 1)
 
@@ -274,7 +278,8 @@ async def test_exit_position_live_transitions_to_exiting(tmp_path: Path) -> None
     )
 
     sig = _signal()
-    order = await executor.submit(sig, Decimal("100"))
+    submit_result = await executor.submit(sig, Decimal("100"))
+    order = submit_result.order
     assert order is not None
     order.state = OrderState.FILLED
     order.fill_time = time.monotonic()
@@ -306,7 +311,8 @@ async def test_exit_position_paper_finalizes_immediately(tmp_path: Path) -> None
     )
 
     sig = _signal()
-    order = await executor.submit(sig, Decimal("100"))
+    submit_result = await executor.submit(sig, Decimal("100"))
+    order = submit_result.order
     assert order is not None
     assert order.state == OrderState.FILLED  # paper fills immediately
 
@@ -332,7 +338,8 @@ async def test_check_pending_fills_confirms_exit_sell(tmp_path: Path) -> None:
     )
 
     sig = _signal()
-    order = await executor.submit(sig, Decimal("100"))
+    submit_result = await executor.submit(sig, Decimal("100"))
+    order = submit_result.order
     assert order is not None
     order.state = OrderState.FILLED
     order.fill_time = time.monotonic()
@@ -369,7 +376,8 @@ async def test_settlement_races_exiting_order(tmp_path: Path) -> None:
     )
 
     sig = _signal(side=Side.NO)
-    order = await executor.submit(sig, Decimal("100"))
+    submit_result = await executor.submit(sig, Decimal("100"))
+    order = submit_result.order
     assert order is not None
     order.state = OrderState.FILLED
     order.fill_time = time.monotonic()
@@ -402,7 +410,8 @@ async def test_exiting_excluded_from_filled_orders(tmp_path: Path) -> None:
     )
 
     sig = _signal()
-    order = await executor.submit(sig, Decimal("100"))
+    submit_result = await executor.submit(sig, Decimal("100"))
+    order = submit_result.order
     assert order is not None
     order.state = OrderState.FILLED
     order.fill_time = time.monotonic()
@@ -429,7 +438,8 @@ async def test_exiting_in_active_tickers(tmp_path: Path) -> None:
     )
 
     sig = _signal()
-    order = await executor.submit(sig, Decimal("100"))
+    submit_result = await executor.submit(sig, Decimal("100"))
+    order = submit_result.order
     assert order is not None
     order.state = OrderState.FILLED
     order.fill_time = time.monotonic()

@@ -676,14 +676,16 @@ async def _fast_eval_loop(
         log: bool = False,
         **fields: Any,
     ) -> None:
-        prev = last_eval_reason.get(symbol, {}).get("result")
+        prev_state = last_eval_reason.get(symbol, {})
+        prev = prev_state.get("result")
+        prev_block = prev_state.get("likely_block")
         last_eval_reason[symbol] = {
             "result": result,
             "at": datetime.now(timezone.utc).isoformat(),
             "ticker": ticker,
             "likely_block": likely_block,
         }
-        if log and prev != result:
+        if log and (prev != result or (likely_block is not None and prev_block != likely_block)):
             logger.info(result, symbol=symbol, ticker=ticker, **fields)
 
     while not shutdown.is_set():
@@ -785,16 +787,37 @@ async def _fast_eval_loop(
                     last_eval_mono[symbol] = now
 
                     if signal is None:
+                        likely_block = _infer_no_signal_block(
+                            window=window,
+                            orderbook=orderbook,
+                            settings=settings,
+                        )
                         _bump_counter(signal_counters, "no_signal")
                         _record_reason(
                             symbol,
                             ticker,
                             "no_signal",
-                            likely_block=_infer_no_signal_block(
-                                window=window,
-                                orderbook=orderbook,
-                                settings=settings,
-                            ),
+                            likely_block=likely_block,
+                            log=True,
+                            seconds_remaining=window.seconds_remaining,
+                            price_change_pct=window.price_change_pct,
+                            momentum_60s=window.momentum_60s,
+                            orderbook_imbalance=orderbook.orderbook_imbalance,
+                            best_yes_bid=float(orderbook.best_yes_bid)
+                            if orderbook.best_yes_bid is not None
+                            else None,
+                            best_yes_ask=float(orderbook.best_yes_ask)
+                            if orderbook.best_yes_ask is not None
+                            else None,
+                            best_no_bid=float(orderbook.best_no_bid)
+                            if orderbook.best_no_bid is not None
+                            else None,
+                            best_no_ask=float(orderbook.best_no_ask)
+                            if orderbook.best_no_ask is not None
+                            else None,
+                            min_trade_price=settings.min_trade_price,
+                            max_trade_price=settings.max_trade_price,
+                            edge_threshold=settings.edge_threshold,
                         )
                         continue
 
@@ -833,24 +856,42 @@ async def _fast_eval_loop(
                         )
                         continue
 
-                    result = await executor.submit(signal, cached.balance)
-                    if result is not None:
+                    submit_result = await executor.submit(signal, cached.balance)
+                    if submit_result.order is not None:
                         _bump_counter(signal_counters, "trade")
                         _record_reason(symbol, ticker, "trade")
                         last_risk_block.pop(ticker, None)
                         executor.log_signal(
-                            signal, "trade", f"order_id={result.order_id}"
+                            signal, "trade", f"order_id={submit_result.order.order_id}"
                         )
                         if alerter is not None:
                             await alerter.trade_placed(
-                                signal, result.contracts, result.order_id
+                                signal,
+                                submit_result.order.contracts,
+                                submit_result.order.order_id,
                             )
                     else:
-                        _bump_counter(signal_counters, "skip_sizing")
-                        _record_reason(symbol, ticker, "skip_sizing")
-                        executor.log_signal(
-                            signal, "skip_sizing", "sizing returned 0 contracts"
-                        )
+                        skip_reason = submit_result.skip_reason or "unknown"
+                        if skip_reason == "edge_gone":
+                            _bump_counter(signal_counters, "skip_edge")
+                            _record_reason(symbol, ticker, "skip_edge")
+                            executor.log_signal(
+                                signal,
+                                "skip_edge",
+                                "edge gone at fresh price",
+                            )
+                        elif skip_reason == "sizing_zero":
+                            _bump_counter(signal_counters, "skip_sizing")
+                            _record_reason(symbol, ticker, "skip_sizing")
+                            executor.log_signal(
+                                signal, "skip_sizing", "sizing returned 0 contracts"
+                            )
+                        else:
+                            _bump_counter(signal_counters, "skip_submit")
+                            _record_reason(symbol, ticker, "skip_submit")
+                            executor.log_signal(
+                                signal, "skip_submit", f"submit skipped: {skip_reason}"
+                            )
 
                     # --- Exit evaluation (fast path) ---
                     # Check exits on every eval tick (~200ms) instead of
