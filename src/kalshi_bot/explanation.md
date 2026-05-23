@@ -2,6 +2,8 @@
 
 *Generated 2026-05-23. Source: VPS `trades.db`, `logs/bot.log*`, `live_state.json`, and the Kalshi portfolio export at `/root/fromkalshi/data.csv` (2026-05-22T14:58Z → 2026-05-23T14:30Z).*
 
+> **STATUS (2026-05-23, post-diagnosis):** the code-side fixes recommended below have been applied and committed. See [Appendix C — Fixes applied](#appendix-c--fixes-applied-2026-05-23) at the bottom for the per-file diff summary and the operator follow-up that's still pending. `.env` sizing was deliberately left alone.
+
 ---
 
 ## 0. Live cutoff & scope
@@ -522,3 +524,80 @@ All P&L numbers are in USD. All timestamps are UTC unless otherwise noted. Trade
 | Q5 | Entry fills BETTER than VPS records (median −3¢). Well inside paper's 38¢ slippage tolerance. Exit slippage: cannot measure (Q2). |
 | Q6 | YES side post-restriction: 60.9% WR, +$27.49, KEEP enabled. But all 23 trades are momentum-strategy YES; LWM Fix B is unmeasured. |
 | Q7 | Above breakeven (54.3% vs 40.6%) but Kelly is 6.25× over plan. Survived 103%-of-balance drawdown by luck. |
+
+---
+
+## Appendix C — Fixes applied (2026-05-23)
+
+The code-side fixes recommended in §RECOMMENDATION above have been
+implemented, tested, and committed. **No `.env` changes** — sizing /
+Kelly / per-side limits are unchanged; that's an operator decision once
+the bot has run a clean paper cycle with the new code.
+
+### Commits landed
+
+```
+619720d  docs: live-vs-paper diagnosis + fix changelog
+2f42028  WS silent-feed watchdog: force reconnect on >30s of no messages
+74c2e6b  Persist exit_reason='settlement' + client_order_id for reconcile
+1581184  Hoist _evaluate_exits before signal-eval continues (Q2 fix)
+d5b4091  Ingest Kalshi settlement strike; use it for window direction
+```
+
+A full per-fix changelog is in [`CHANGELOG_LIVE_EXIT_FIX.md`](../../CHANGELOG_LIVE_EXIT_FIX.md) at the repo root.
+
+### Fix-to-diagnosis map
+
+| Diagnosis Q | Fix | Files (key lines) | What changes for the running bot |
+|---|---|---|---|
+| **Q2** — 0 live `time_exit` events; exit eval was unreachable on most ticks | Move `_evaluate_exits` to run on every tick that has a fresh orderbook, regardless of whether a fresh entry signal was generated | `main.py` (exit-eval call hoisted before the strategy evaluation in `_fast_eval_loop`) | T-30s `time_exit` actually fires now. Expect `exit_signal` log lines and a non-zero `time_exit` cohort in `trades.db`. |
+| **Q2 follow-up** — every live row has `exit_reason=NULL` | Pass `exit_reason='settlement'` from `record_settlement` to `_update_trade_pnl` | `execution/executor.py:777` | Every newly-closed trade has a non-NULL `exit_reason` (`time_exit` / `settlement` / `orphan_reconciled`). Makes Q2's exit-split measurable. |
+| **Q4** — bot's `went_up` used `close >= open` but Kalshi settles `close >= floor_strike` (~20% mismatch on narrow-move windows) | Add `floor_strike` / `cap_strike` / `strike_type` to the `Market` model, parse them from `/markets`, persist on `WindowState`, and use them in `_close_window` (with fallback to the legacy open comparison when strike is unknown) | `models/market.py` (new fields + `settlement_strike` property), `client/kalshi.py` (`_parse_market`), `data/window_tracker.py` (`WindowState.strike`, `set_window`, `_close_window`), `main.py:294-300` (threads `settlement_strike` into `set_window`) | Newly-closed windows are labeled against the real Kalshi strike. `market_events.result` for new rows now matches Kalshi's settlement direction. Historical rows are **NOT** rewritten — that needs a separate backfill before the backtest's P0/Test A/Test C edge claim can be considered re-validated. |
+| **Q0** — VPS `order_id` doesn't match Kalshi's portfolio-export `Market_Id`; any UUID-keyed reconcile fails silently | Capture `client_order_id` (the UUID the bot generates and sends in the POST body, which Kalshi echoes back) and persist it on the `trades` row | `execution/executor.py` (`TrackedOrder.__init__`, `submit()`, `_log_trade`, schema migration `ALTER TABLE trades ADD COLUMN client_order_id TEXT`) | Every new trade carries both IDs. Future audits can join by `client_order_id` even if Kalshi's export uses a different identifier for the server-side order. |
+| **Q3** — 10-min silent feed outage (2026-05-23T08:00) did not trigger reconnect | Track `_last_message_mono`; on each `ws.recv()` timeout, if it has been > 30s since the last message, close the socket and raise `ConnectionClosed` so the outer `start()` loop reconnects | `client/kalshi_ws.py` (`_SILENT_FEED_WATCHDOG_S = 30.0`, watchdog check in `_stream_loop`) | Silent outages now self-heal in ~30s instead of relying on TCP keepalive (which observably failed). New log line: `kalshi_ws_silent_watchdog silent_for=Xs threshold=30s — forcing reconnect`. |
+
+### Tests added
+
+| test | covers |
+|---|---|
+| `tests/test_exits.py::test_time_exit_fires_in_final_30s` | Regression for Q2: at T-15s with `signal=None`, `exit_position` must be called with `exit_reason='time_exit'`. |
+| `tests/test_exits.py::test_time_exit_skipped_for_late_entry` | Counter-test: entries placed with `seconds_remaining <= 90` are correctly held to settlement. |
+| `tests/test_window_tracker.py::test_strike_based_direction_yes_wins_when_above_strike` | Q4: close above strike → YES wins even when close < open. |
+| `tests/test_window_tracker.py::test_strike_based_direction_no_wins_when_below_strike` | Q4: close below strike → NO wins even when close > open. |
+| `tests/test_window_tracker.py::test_falls_back_to_open_when_strike_missing` | Q4 backwards compatibility for older replay data without strike metadata. |
+| `tests/test_window_tracker.py::test_strike_refreshes_on_same_window_set` | Q4: Kalshi can update strike between `set_window` calls; the refresh should overwrite without resetting accumulated price data. |
+
+### Quality gates at commit time
+
+```
+$ PYTHONPATH=src .venv/bin/python -m pytest tests/
+======================== 101 passed, 1 warning in 2.35s ========================
+
+$ PYTHONPATH=src .venv/bin/python -m mypy --strict src/
+Success: no issues found in 38 source files
+
+$ .venv/bin/ruff check src/ tests/
+All checks passed!
+```
+
+### What was deliberately NOT changed
+
+- **`.env`** — `KELLY_FRACTION=0.625`, `MAX_PER_TRADE=$25`, `DAILY_LOSS_LIMIT=$10`, `PER_SIDE_DAILY_LOSS_LIMIT=$5` are unchanged. The recommendation to dial Kelly back to 0.10 for the first week with the new exit path is **deferred to the operator**.
+- **Historical `market_events.result`** rows — the strike fix is forward-only. Existing backtest data still uses the open-based labeling and is still ~20% mislabeled on narrow-move windows. Re-validating P0 / Test A / Test C requires backfilling strikes via `/markets/{ticker}` for old tickers, which is out of scope for this change set.
+- **`SWITCH_TO_LIVE.md`** — operator runbook left untouched.
+
+### What to watch in the bot logs after the restart
+
+| log line | meaning | expected frequency |
+|---|---|---|
+| `exit_signal` (with `reason=time_exit ...`) | The Q2 fix is firing — exits are evaluated on every tick now | one per filled order in its final 30s (so up to several per hour) |
+| `Window from market: BTC open=X strike=Y open_time=...` | Strike was successfully parsed from Kalshi (was `n/a` before this fix for missing strikes) | once per window roll (every 15 min per symbol) |
+| `kalshi_ws_silent_watchdog silent_for=Xs threshold=30s — forcing reconnect` | Watchdog tripped — only expected during a real outage; if you see it dozens of times an hour, the threshold needs raising | rare (~once per silent outage; was 1 such outage in the 24h diagnosis window) |
+| `Settled ... pnl=X fees=Y` | Already existed — but combined with the `exit_reason='settlement'` write, settled trades are now distinguishable in `trades.db` | one per market close per filled position |
+
+### Operator follow-up (still pending)
+
+1. **Restart**: `./restart.sh` from the bot dir. The schema migration (`ALTER TABLE trades ADD COLUMN client_order_id TEXT`) runs on first DB open.
+2. **Watch a few cycles in paper** if you want maximum safety — verify `exit_signal` lines appear and `trades.exit_reason` populates. (You can keep `TRADING_MODE=live` if you trust the test coverage; the fixes are behavior-preserving except for the explicit `time_exit` firing.)
+3. **Optional sizing dial-back** — set `KELLY_FRACTION=0.10`, `MAX_PER_TRADE=5.00` in `.env` for the first session if you want extra margin while watching the new exit path.
+4. **Backfill historical strikes** (separate project) — re-fetch `/markets/{ticker}` for old tickers, rewrite `market_events.result` against `close >= floor_strike`, then re-run P0 / Test A / Test C. Until that lands, treat the backtest's edge claim as unvalidated.
