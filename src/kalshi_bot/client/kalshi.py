@@ -268,6 +268,15 @@ class KalshiClient:
 
 def _parse_market(data: dict[str, Any]) -> Market:
     """Parse raw API market data into a Market model."""
+    def _opt_dec(key: str) -> Decimal | None:
+        v = data.get(key)
+        if v is None or v == "":
+            return None
+        try:
+            return Decimal(str(v))
+        except Exception:
+            return None
+
     return Market(
         ticker=data["ticker"],
         series_ticker=data.get("series_ticker", ""),
@@ -280,6 +289,10 @@ def _parse_market(data: dict[str, Any]) -> Market:
         no_ask=Decimal(data["no_ask"]) if data.get("no_ask") else None,
         no_bid=Decimal(data["no_bid"]) if data.get("no_bid") else None,
         volume=data.get("volume", 0),
+        floor_strike=_opt_dec("floor_strike"),
+        cap_strike=_opt_dec("cap_strike"),
+        strike_type=data.get("strike_type") or None,
+        expected_expiration_value=_opt_dec("expected_expiration_value"),
     )
 
 

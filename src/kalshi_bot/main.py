@@ -289,11 +289,14 @@ class CachedState:
                 if not active:
                     continue
                 market = min(active, key=lambda m: m.close_time)
+                strike = market.settlement_strike
                 tracker.set_window(
                     symbol,
                     ticker=market.ticker,
                     open_time=market.open_time,
                     close_time=market.close_time,
+                    strike=float(strike) if strike is not None else None,
+                    strike_type=market.strike_type,
                 )
                 next_markets[symbol] = market
 

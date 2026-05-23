@@ -22,6 +22,27 @@ class Market(BaseModel):
     no_ask: Decimal | None = None
     no_bid: Decimal | None = None
     volume: int = 0
+    # Settlement-strike fields. Kalshi's KX{BTC,ETH,SOL}15M markets settle
+    # on close-price >= floor_strike (when strike_type='greater_or_equal'),
+    # NOT on close-vs-open. See explanation.md / Q4.
+    floor_strike: Decimal | None = None
+    cap_strike: Decimal | None = None
+    strike_type: str | None = None
+    expected_expiration_value: Decimal | None = None
+
+    @property
+    def settlement_strike(self) -> Decimal | None:
+        """Return the price level Kalshi uses to determine settlement.
+
+        For binary "above-target" markets (the 15-min crypto windows),
+        Kalshi sets ``floor_strike`` to the threshold and ``strike_type``
+        to ``"greater_or_equal"``. YES wins iff the close price >= strike.
+        """
+        if self.floor_strike is not None:
+            return self.floor_strike
+        if self.cap_strike is not None:
+            return self.cap_strike
+        return None
 
 
 class OrderBookLevel(BaseModel):

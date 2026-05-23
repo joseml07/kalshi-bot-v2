@@ -25,6 +25,11 @@ class WindowState:
     prices_60s: deque[tuple[float, float]] = field(
         default_factory=lambda: deque(maxlen=600)
     )
+    # Kalshi settlement strike (and comparison type). When non-None, used as
+    # the reference for direction labeling instead of open_price. See Q4 of
+    # explanation.md for why this matters.
+    strike: float | None = None
+    strike_type: str | None = None
 
     @property
     def seconds_remaining(self) -> int:
@@ -68,6 +73,7 @@ class PreviousResult:
     close_time: datetime
     open_price: float = 0.0
     close_price: float = 0.0
+    strike: float | None = None
 
 
 class WindowTracker:
@@ -127,19 +133,33 @@ class WindowTracker:
         open_time: datetime,
         close_time: datetime,
         open_price: float = 0.0,
+        strike: float | None = None,
+        strike_type: str | None = None,
     ) -> None:
         """Set a window from Kalshi market data.
 
         If a window already exists for this symbol with the same close_time,
-        it is left untouched (preserves accumulated price data).  Otherwise
-        the old window is closed and a new one is created.
+        the strike/strike_type are refreshed in place (Kalshi can update
+        these between snapshots) and existing accumulated price data is
+        preserved.  Otherwise the old window is closed and a new one is
+        created.
 
         When *open_price* is 0.0, the most recent Coinbase price for this
         symbol is used instead (if available).
+
+        *strike* and *strike_type* come from the Kalshi market metadata
+        (``floor_strike`` / ``strike_type``) and are used by
+        ``_close_window`` to determine direction. When *strike* is None
+        the legacy ``current_price >= open_price`` fallback applies.
         """
         existing = self._windows.get(symbol)
         if existing is not None and existing.close_time == close_time:
-            return  # same window, keep it
+            # Refresh strike metadata in case it was unknown at first set.
+            if strike is not None:
+                existing.strike = strike
+            if strike_type is not None:
+                existing.strike_type = strike_type
+            return  # same window, keep accumulated state
 
         if existing is not None:
             self._close_window(symbol)
@@ -158,11 +178,14 @@ class WindowTracker:
             close_time=close_time,
             open_price=open_price,
             current_price=open_price,
+            strike=strike,
+            strike_type=strike_type,
         )
         logger.info(
-            "Window from market: %s open=%.2f open_time=%s close=%s",
+            "Window from market: %s open=%.2f strike=%s open_time=%s close=%s",
             symbol,
             open_price,
+            f"{strike:.2f}" if strike is not None else "n/a",
             open_time.isoformat(),
             close_time.isoformat(),
         )
@@ -191,17 +214,37 @@ class WindowTracker:
         return list(q)
 
     def _close_window(self, symbol: str) -> None:
-        """Close a window and record the result."""
+        """Close a window and record the result.
+
+        Direction (``went_up``) is determined by the Kalshi settlement
+        strike when available, since Kalshi settles
+        ``close >= floor_strike`` (for ``strike_type='greater_or_equal'``),
+        not ``close >= open``. Falls back to the legacy open-comparison
+        when no strike was captured (older replay data, paper sims that
+        haven't been re-fed market metadata).
+        """
         win = self._windows.pop(symbol, None)
         if win is None:
             return
-        went_up = win.current_price >= win.open_price
+        if win.strike is not None:
+            # Kalshi's KX{BTC,ETH}15M markets are 'greater_or_equal':
+            # YES wins iff close >= floor_strike. We support
+            # 'less_or_equal' too in case Kalshi adds it.
+            if win.strike_type == "less_or_equal":
+                went_up = win.current_price <= win.strike
+            else:
+                went_up = win.current_price >= win.strike
+            ref_label, ref_val = "strike", win.strike
+        else:
+            went_up = win.current_price >= win.open_price
+            ref_label, ref_val = "open", win.open_price
         self._previous[symbol] = PreviousResult(
             symbol=symbol,
             went_up=went_up,
             close_time=win.close_time,
             open_price=win.open_price,
             close_price=win.current_price,
+            strike=win.strike,
         )
         # Record price change for realized volatility estimation
         if win.open_price > 0:
@@ -213,9 +256,10 @@ class WindowTracker:
         if win.open_price > 0 and win.current_price != win.open_price:
             self._closed_queue.append((symbol, win))
         logger.info(
-            "Window closed: %s went_up=%s (open=%.2f close=%.2f)",
+            "Window closed: %s went_up=%s (close=%.2f vs %s=%.2f)",
             symbol,
             went_up,
-            win.open_price,
             win.current_price,
+            ref_label,
+            ref_val,
         )
