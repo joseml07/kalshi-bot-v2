@@ -146,6 +146,7 @@ class KalshiOrderbookFeed:
             "delta_bad_side": 0,
             "negative_qty": 0,
             "sequence_gap": 0,
+            "crossed_book": 0,
             "resync_ticker": 0,
             "resync_full": 0,
         }
@@ -478,11 +479,20 @@ class KalshiOrderbookFeed:
                 self._stats["negative_qty"] += 1
         else:
             book[price_cents] = new_qty
-            # Do NOT reset self._anomaly_counts[ticker] here. Resetting on every
-            # valid delta erases the corruption signal when good and bad deltas
-            # interleave — observed in production (3466 bad deltas, only 61
-            # resyncs before this fix). The counter is cleared naturally when a
-            # fresh snapshot arrives (via resync in _apply_snapshot).
+
+        # Cross-prevention: a YES bid at P and a NO bid at Q with P+Q>100
+        # is impossible (instant arb).  When a new delta adds/grows a level,
+        # trim opposite-side levels that would create a cross.  The newest
+        # delta is the freshest information, so the updated side is
+        # authoritative and stale opposite levels are removed.
+        if new_qty > 0:
+            opposite = state.no if side == "yes" else state.yes
+            cutoff = 100 - price_cents  # max valid opposite price
+            stale = [p for p in opposite if p > cutoff]
+            if stale:
+                for p in stale:
+                    opposite.pop(p)
+                self._stats["crossed_book"] += 1
 
         state.updated_at = datetime.now(timezone.utc)
         self._last_update_mono = time.monotonic()
