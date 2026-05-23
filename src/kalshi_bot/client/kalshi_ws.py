@@ -54,6 +54,15 @@ _RESYNC_COOLDOWN_S = 10.0
 # resync first; burst only fires when multiple tickers are flaking together.
 _FULL_RESYNC_BURST_THRESHOLD = 50
 
+# If no messages of any type have arrived for this many seconds we treat the
+# connection as silently dead and force a full reconnect via the outer loop.
+# Closes the gap from 2026-05-23T08:00:13 → 08:10:27 when messages_total
+# flatlined for ~200s without firing a reconnect (Q3 in explanation.md).
+# Sized below the worst observed outage (197s) so the bot recovers faster than
+# Kalshi's own ping/pong notices, but above legitimate quiet periods on the
+# orderbook_delta channel.
+_SILENT_FEED_WATCHDOG_S = 30.0
+
 
 @dataclass
 class _BookState:
@@ -133,6 +142,10 @@ class KalshiOrderbookFeed:
         # Signals _stream_loop that _tickers changed and a resubscribe is needed.
         self._resubscribe_event = asyncio.Event()
         self._last_update_mono: float | None = None
+        # Any message (snapshot, delta, error, ack) — used by the
+        # silent-feed watchdog to detect a dead connection that hasn't
+        # tripped TCP/WS keepalive.
+        self._last_message_mono: float | None = None
         self._anomaly_counts: dict[str, int] = {}
         self._last_seq_by_sid: dict[int, int] = {}
         self._stats: dict[str, int] = {
@@ -277,8 +290,17 @@ class KalshiOrderbookFeed:
 
         Uses a 1-second recv timeout so the loop can react to ticker changes
         signalled via _resubscribe_event without blocking on a slow market.
+
+        Also runs the silent-feed watchdog: if no message of any kind has
+        arrived within ``_SILENT_FEED_WATCHDOG_S``, raise
+        ``ConnectionClosed`` so the outer ``start()`` loop reconnects with a
+        fresh socket (the 2026-05-23T08:00 outage flatlined messages_total
+        for ~200s without tripping TCP keepalive).
         """
         msg_id = 2
+        # Seed the watchdog at loop entry so the first iteration doesn't
+        # trip before we have a chance to receive anything.
+        self._last_message_mono = time.monotonic()
         while self._running:
             # Resubscribe if the ticker set changed.
             if self._resubscribe_event.is_set():
@@ -290,7 +312,27 @@ class KalshiOrderbookFeed:
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
             except asyncio.TimeoutError:
+                # No message this tick. If we've been silent for too long,
+                # force a reconnect — TCP keepalive missed the outage.
+                if self._last_message_mono is not None:
+                    silent_for = time.monotonic() - self._last_message_mono
+                    if silent_for > _SILENT_FEED_WATCHDOG_S:
+                        logger.warning(
+                            "kalshi_ws_silent_watchdog silent_for=%.1fs "
+                            "threshold=%.1fs — forcing reconnect",
+                            silent_for,
+                            _SILENT_FEED_WATCHDOG_S,
+                        )
+                        # Close the WS; the outer start() loop will reconnect
+                        # and the new connection will issue a fresh subscribe.
+                        await ws.close()
+                        raise websockets.ConnectionClosed(None, None)
                 continue
+
+            # Record reception BEFORE parsing so a malformed payload that
+            # makes the JSON parser throw still counts as 'connection is
+            # alive'. The decoder is in a try below.
+            self._last_message_mono = time.monotonic()
 
             if isinstance(raw, bytes):
                 raw = raw.decode()
