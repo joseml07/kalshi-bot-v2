@@ -33,8 +33,9 @@ def _window(ticker: str = "KXBTC15M-TEST") -> WindowState:
     )
 
 @pytest.mark.asyncio
-async def test_take_profit_triggers() -> None:
-    # Set up order with entry price 0.29 (NO side)
+async def test_take_profit_disabled_holds_winning_position() -> None:
+    # Take-profit was disabled 2026-05-23 — backtest showed it cost ~14% PnL.
+    # A winner mid-window should now be HELD to settlement, not sold.
     sig = _signal(price=Decimal("0.29"), side=Side.NO)
     order = TrackedOrder(
         signal=sig,
@@ -44,13 +45,12 @@ async def test_take_profit_triggers() -> None:
     )
     order.state = OrderState.FILLED
 
-    # Mock Executor
     executor = AsyncMock()
     executor.filled_orders = [order]
     executor.exit_position.return_value = (True, [])
 
-    # Market NO bid is 0.55 (gain is (0.55-0.29)/0.29 = 89.6% > 50%, conviction/bid 0.55 < 75%)
-    # This should trigger take-profit exit!
+    # Position is up ~90% with conviction 0.55 — old take_profit would have
+    # exited.  Now it must hold to settlement.
     window = _window()
     await _evaluate_exits(
         executor=executor,
@@ -61,11 +61,7 @@ async def test_take_profit_triggers() -> None:
         window=window,
     )
 
-    executor.exit_position.assert_called_once()
-    args, kwargs = executor.exit_position.call_args
-    assert args[0] == order
-    assert args[1] == Decimal("0.55")
-    assert "take_profit" in kwargs.get("exit_reason", "")
+    executor.exit_position.assert_not_called()
 
 @pytest.mark.asyncio
 async def test_take_profit_does_not_trigger_high_conviction() -> None:

@@ -1498,17 +1498,10 @@ async def _evaluate_exits(
         should_exit = False
         reason = ""
 
-        # Take-profit: lock in gains when conviction isn't high.
-        # current_value = best bid for our side (what we'd sell at)
-        # If unrealized profit > 50% of entry AND market conviction < 75%,
-        # sell to lock in profit rather than gambling on settlement.
-        unrealized_pct = (float(current_value) - float(order.price)) / float(order.price)
-        if unrealized_pct > 0.50 and float(current_value) < 0.75:
-            should_exit = True
-            reason = (
-                f"take_profit: entry={order.price} now={current_value} "
-                f"gain={unrealized_pct:.0%} conviction={float(current_value):.2f}"
-            )
+        # Take-profit was disabled 2026-05-23 after backtest showed it cost
+        # ~14% PnL by locking in 60c partial wins on contracts that settle at
+        # $1.00.  Original motivation (preventing 1730-style unrealized swings)
+        # is already addressed by MAX_CONTRACTS=10 sizing cap.
 
         if not should_exit and order.signal.seconds_remaining > 90 and window.seconds_remaining < 30:
             should_exit = True
