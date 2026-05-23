@@ -63,9 +63,13 @@ class TrackedOrder:
         order_id: str,
         contracts: int,
         price: Decimal,
+        client_order_id: str | None = None,
     ) -> None:
         self.signal = signal
         self.order_id = order_id
+        # Kalshi-generated portfolio-export ID may differ from order_id;
+        # we persist client_order_id so future audits can cross-key.
+        self.client_order_id = client_order_id
         self.contracts = contracts
         self.price = price
         self.intended_price: Decimal = price
@@ -301,11 +305,13 @@ class Executor:
             self._risk.release_reservation(signal.ticker)
             raise
         order_id = str(order_resp["order_id"])
+        client_oid = order_resp.get("client_order_id")
         tracked = TrackedOrder(
             signal=signal,
             order_id=order_id,
             contracts=contracts,
             price=entry_price,
+            client_order_id=str(client_oid) if client_oid else None,
         )
         self._orders[order_id] = tracked
         # Do NOT log to DB here — wait for fill confirmation in
@@ -774,7 +780,7 @@ class Executor:
                     order.signal, oid, order.contracts, order.price, None,
                 )
                 order.db_logged = True
-            self._update_trade_pnl(oid, pnl, entry_fee)
+            self._update_trade_pnl(oid, pnl, entry_fee, exit_reason="settlement")
             logger.info(
                 "Settled %s side=%s result=%s won=%s pnl=%s fees=%s",
                 ticker,
@@ -952,11 +958,19 @@ class Executor:
         price: Decimal,
         pnl: Decimal | None,
     ) -> None:
+        # Look up the tracked order so we can also persist the
+        # client_order_id (the UUID we generated and sent to Kalshi).
+        # Persisting both IDs lets us cross-key VPS trades to Kalshi's
+        # portfolio export, which uses a different identifier than the
+        # one POST /portfolio/orders returns. See Q0 in explanation.md.
+        tracked = self._orders.get(order_id)
+        client_oid = tracked.client_order_id if tracked is not None else None
         self._db.execute(
             """INSERT INTO trades
                (timestamp, order_id, ticker, symbol, strategy, side,
-                contracts, price, edge, net_edge, pnl, route)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                contracts, price, edge, net_edge, pnl, route,
+                client_order_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 datetime.now(timezone.utc).isoformat(),
                 order_id,
@@ -970,6 +984,7 @@ class Executor:
                 str(signal.net_edge),
                 str(pnl) if pnl is not None else None,
                 getattr(signal, "route", "taker"),
+                client_oid,
             ),
         )
         self._db.commit()
@@ -1085,6 +1100,13 @@ def _init_db(path: str) -> sqlite3.Connection:
         conn.execute("ALTER TABLE trades ADD COLUMN route TEXT DEFAULT 'taker'")
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE trades ADD COLUMN exit_reason TEXT")
+    # client_order_id: the bot-generated UUID we send to Kalshi as
+    # client_order_id. Kalshi's portfolio export keys on a DIFFERENT
+    # identifier than what POST /portfolio/orders returns as order_id,
+    # so by persisting both we can join historical exports back to our
+    # trade rows. See explanation.md / Q0.
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE trades ADD COLUMN client_order_id TEXT")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
