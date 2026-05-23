@@ -44,7 +44,11 @@ class RiskManager:
             Decimal(str(ps_limit)) if ps_limit > 0 else None
         )
         self._per_side_daily_pnl: dict[str, Decimal] = {"yes": Decimal("0"), "no": Decimal("0")}
-        self._per_side_paused_today: set[str] = set()
+        # Per-side cooldown: side -> monotonic time when cooldown expires.
+        # Replaces the old permanent daily pause with a 30-minute cooldown
+        # so a side can recover rather than being dead for the session.
+        self._per_side_paused_until: dict[str, float] = {}
+        self._per_side_cooldown_s = 1800.0  # 30 minutes
 
         # Side degradation monitor (rolling WR alert).
         self._wr_window = int(getattr(settings, "side_wr_alert_window", 30) or 30)
@@ -109,22 +113,24 @@ class RiskManager:
             self._per_side_daily_pnl[side_key] = (
                 self._per_side_daily_pnl.get(side_key, Decimal("0")) + pnl
             )
-            # Per-side loss-limit gate.
+            # Per-side loss-limit gate: 30-min cooldown instead of all-day kill.
             if (
                 self._per_side_daily_loss_limit is not None
-                and side_key not in self._per_side_paused_today
                 and -self._per_side_daily_pnl[side_key] >= self._per_side_daily_loss_limit
             ):
-                self._per_side_paused_today.add(side_key)
+                resume_at = time.monotonic() + self._per_side_cooldown_s
+                self._per_side_paused_until[side_key] = resume_at
                 events["side_paused"] = {
                     "side": side_key,
                     "daily_pnl": str(self._per_side_daily_pnl[side_key]),
                     "limit": str(self._per_side_daily_loss_limit),
+                    "cooldown_min": self._per_side_cooldown_s / 60,
                 }
                 logger.warning(
-                    "per_side_pause side=%s daily_pnl=%s limit=%s",
+                    "per_side_pause side=%s daily_pnl=%s limit=%s cooldown=%.0fmin",
                     side_key, self._per_side_daily_pnl[side_key],
                     self._per_side_daily_loss_limit,
+                    self._per_side_cooldown_s / 60,
                 )
 
             # Rolling-WR degradation alert.
@@ -219,7 +225,7 @@ class RiskManager:
             self._pnl_date = today
             # Reset per-side daily state on rollover.
             self._per_side_daily_pnl = {"yes": Decimal("0"), "no": Decimal("0")}
-            self._per_side_paused_today.clear()
+            self._per_side_paused_until.clear()
 
     def _check_kill_switch(self) -> None:
         if KILL_SWITCH_FILE.exists():
@@ -232,13 +238,15 @@ class RiskManager:
             )
 
     def _check_per_side_daily_loss(self, signal: Signal) -> None:
-        """Per-side daily loss circuit-breaker. Off when limit is unset."""
+        """Per-side daily loss circuit-breaker with cooldown. Off when limit is unset."""
         if self._per_side_daily_loss_limit is None:
             return
         side = signal.side.value.lower()
-        if side in self._per_side_paused_today:
+        paused_until = self._per_side_paused_until.get(side)
+        if paused_until is not None and time.monotonic() < paused_until:
+            remaining = paused_until - time.monotonic()
             raise RiskVetoError(
-                f"{side} side paused for the day "
+                f"{side} side paused for {remaining / 60:.0f}min "
                 f"(daily_pnl={self._per_side_daily_pnl.get(side, Decimal('0'))}, "
                 f"limit={self._per_side_daily_loss_limit})"
             )
