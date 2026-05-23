@@ -1,514 +1,524 @@
-# Kalshi V2 Bot — Edge Analysis & Evidence Report
+# Live-vs-Paper Diagnosis — Kalshi Bot v2
 
-Generated: 2026-05-21 from live paper-trading database (trades.db) and 50-day tick history.
-Updated: 2026-05-21 with corrected P0 matrix, entry-exit reclassification (Test A),
-P&L decomposition (Test B), and settlement anomaly resolution (Test C).
-
-This document addresses the falsification framework: does the bot have genuine
-predictive edge, or is it a trend follower whose P&L is determined by market
-direction? All data below is from the production SQLite database. No numbers are
-cherry-picked — every cell in the P0 matrix is shown including losing ones.
+*Generated 2026-05-23. Source: VPS `trades.db`, `logs/bot.log*`, `live_state.json`, and the Kalshi portfolio export at `/root/fromkalshi/data.csv` (2026-05-22T14:58Z → 2026-05-23T14:30Z).*
 
 ---
 
-## P0 — THE DECISIVE TEST: Edge vs Direction Exposure
+## 0. Live cutoff & scope
 
-### Market Direction Distribution (5,937 windows)
+- **Strict live cutoff** (first non-paper trade, per `order_id NOT LIKE 'PAPER-%'`): `2026-04-16T21:21:59Z`.
+- **Current live cycle** (`.env` `TRADING_MODE=paper → live` flip, first live HEALTH event with `mode=live`): `2026-05-22T15:03:27Z`. First fill after the flip: `2026-05-22T16:08:08Z`.
+- Between `2026-05-04T13:05Z` and `2026-05-22T16:08Z` (~18 days), the bot ran paper-only.
+- The pre-May-4 "live" period is **statistically useless** for this diagnosis: 467/928 rows have `pnl=0` AND `fees=NULL`, the executor schema at the time wasn't tracking outcomes. All "live" metrics below report the **current live cycle** unless explicitly marked all-time.
 
-The underlying market is NOT one-directional:
-
-| | Total | UP | DOWN | UP% |
-|---|---|---|---|---|
-| All | 5,937 | 3,043 | 2,894 | **51.3%** |
-| BTC | 2,980 | 1,544 | 1,436 | 51.8% |
-| ETH | 2,957 | 1,499 | 1,458 | 50.7% |
-
-Daily UP% over the last 21 days ranges from 45.6% to 55.6%, centered near 50%.
-There is no persistent directional regime.
-
-### Daily Direction Table
-
-| Date | UP | DOWN | Total | UP% |
-|---|---|---|---|---|
-| 2026-04-29 | 104 | 86 | 190 | 54.7% |
-| 2026-04-30 | 85 | 83 | 168 | 50.6% |
-| 2026-05-01 | 108 | 83 | 191 | 56.5% |
-| 2026-05-02 | 110 | 82 | 192 | 57.3% |
-| 2026-05-03 | 97 | 95 | 192 | 50.5% |
-| 2026-05-04 | 98 | 92 | 190 | 51.6% |
-| 2026-05-05 | 106 | 86 | 192 | 55.2% |
-| 2026-05-06 | 98 | 94 | 192 | 51.0% |
-| 2026-05-07 | 77 | 91 | 168 | 45.8% |
-| 2026-05-08 | 62 | 74 | 136 | 45.6% |
-| 2026-05-09 | 68 | 66 | 134 | 50.7% |
-| 2026-05-12 | 30 | 24 | 54 | 55.6% |
-| 2026-05-13 | 100 | 91 | 191 | 52.4% |
-| 2026-05-14 | 90 | 78 | 168 | 53.6% |
-| 2026-05-15 | 97 | 92 | 189 | 51.3% |
-| 2026-05-16 | 88 | 103 | 191 | 46.1% |
-| 2026-05-17 | 96 | 96 | 192 | 50.0% |
-| 2026-05-18 | 95 | 96 | 191 | 49.7% |
-| 2026-05-19 | 97 | 94 | 191 | 50.8% |
-| 2026-05-20 | 96 | 89 | 185 | 51.9% |
-| 2026-05-21 | 59 | 57 | 116 | 50.9% |
-
-### Autocorrelation / Persistence
-
-- Direction runs in 5,937 windows: 2,011 (iid expected: ~2,968)
-- **Runs ratio: 0.68** — direction tends to cluster (persistent), which benefits
-  the momentum entry signal. This is a structural feature of crypto, not a
-  temporary regime.
-
-### CORRECTED P0 Matrix: Side × Direction × Exit Type
-
-**Data-cleaning note:** The original P0 matrix miscategorized ~250 trades with
-`exit_reason = NULL` as "settlement." Investigation revealed that NULL exit_reason
-conflates true binary settlements with older exits from code versions before
-exit_reason tracking was implemented. We reclassified by matching PnL against the
-binary settlement formula: `win_pnl = (1-price)*contracts - fee` or
-`loss_pnl = -price*contracts - fee`. Trades matching neither formula within 2 cents
-are classified as `unlabeled_exit` (old time_exit/stop_loss/edge_gone exits without
-recorded exit_reason).
-
-457 trades matched to their window outcomes:
-
-| Cell | N | Wins | WR | PnL | Verdict |
-|---|---|---|---|---|---|
-| **NO in favorable / time_exit** | 81 | 76 | **93.8%** | +$233.28 | Favorable direction + time_exit |
-| **NO in favorable / settlement** | 10 | 10 | **100%** | +$18.75 | Settlement in favorable direction |
-| NO in favorable / unlabeled_exit | 14 | 13 | 92.9% | +$12.62 | Old exits, favorable |
-| **NO in adverse / time_exit** | **54** | **41** | **75.9%** | **+$83.87** | **KEY: wins in ADVERSE direction** |
-| NO in adverse / settlement | 3 | 0 | 0.0% | -$6.15 | Loses at settlement (expected) |
-| NO in adverse / unlabeled_exit | 13 | 3 | 23.1% | +$1.01 | Old exits, adverse |
-| YES in favorable / time_exit | 25 | 0 | 0.0% | -$12.45 | Broken |
-| YES in favorable / settlement | 6 | 6 | **100%** | +$5.52 | Settlement works correctly |
-| YES in favorable / unlabeled_exit | 158 | 17 | 10.8% | -$39.19 | Old exits, mostly losses |
-| YES in adverse / time_exit | 22 | 0 | 0.0% | -$40.20 | Broken |
-| YES in adverse / unlabeled_exit | 71 | 1 | 1.4% | -$23.72 | Old exits, adverse |
-
-### Interpretation
-
-**The falsification test fails — the bot is NOT a pure trend follower.**
-
-The decisive evidence: **NO time_exit wins 75.9% even in adverse (UP) windows**
-where the final settlement direction is against the position. At settlement, the
-same position is 0% WR (0/3) — pure direction exposure as expected. The time_exit
-mechanism captures intra-window value before the final direction is determined.
-
-Settlement cells now behave exactly as theory predicts:
-- NO settlement in favorable (DOWN): **100%** WR (10/10)
-- NO settlement in adverse (UP): **0%** WR (0/3)
-- YES settlement in favorable (UP): **100%** WR (6/6)
-- This confirms the settlement logic is correct and the earlier 13.9% anomaly
-  was a labeling artifact (see Test C below).
-
-### YES Side: Structurally Broken
-
-YES time_exit: **0 wins out of 47 trades** — not in UP windows, not in DOWN
-windows. This is not a regime issue or sample-size artifact. The time_exit
-mechanism is asymmetric and does not work on YES. YES side is disabled in
-production.
-
-Likely cause: orderbook microstructure asymmetry. NO bids tend to be more
-aggressive/liquid near settlement than YES bids, making the NO exit more reliable.
+Current-cycle counts: **51 trades placed**, 46 closed/settled with recorded P&L, 5 still open at scan. CSV reconciliation window covers exactly this cycle.
 
 ---
 
-## Follow-Up Test A — Entry→Exit Price Reclassification
+## Q1 — LIVE WIN RATE, P&L, AND THE PAPER GAP *(headline)*
 
-The P0 matrix uses window direction (open→close) to classify "adverse." The
-skeptic's objection: maybe the bot only profits in adverse windows where the
-underlying actually dipped during the trade's holding period. Test A reclassifies
-by the underlying crypto price movement between the trade's entry and exit
-timestamps, using the 1.4M-row Coinbase `price_ticks` table (sub-second granularity).
+### Aggregate (current live cycle, 46 closed)
 
-### NO Time_Exit by Entry→Exit Underlying Price Movement
+| metric              | live      | paper backtest sample |
+|---------------------|-----------|-----------------------|
+| trades              | 46        | 369                   |
+| **win rate**        | **54.3%** | 63.7%                 |
+| wins / losses / zero| 25 / 18 / 3 | —                   |
+| **net P&L**         | **+$31.91** | +$544.63            |
+| P&L / trade         | +$0.694   | +$1.476               |
+| total fees          | $5.47     | —                     |
+| fee drag            | 14.6% of gross | —                |
 
-| Bucket | N | Wins | WR | PnL |
-|---|---|---|---|---|
-| **PRICE_ROSE** | **75** | **61** | **81.3%** | **+$161.27** |
-| FLAT (±0.002%) | 5 | 3 | 60.0% | +$6.07 |
-| PRICE_FELL | 55 | 53 | 96.4% | +$149.81 |
-| **Total** | **135** | **117** | **86.7%** | **+$317.15** |
+### By side
 
-**The bot wins 81.3% when the underlying ROSE from entry to exit.** For a pure
-directional NO bet, this cell should lose (rising price = NO loses at settlement).
-Instead, it is the largest bucket and is highly profitable.
+| side | n  | WR     | P&L      | $/trade  | fees   |
+|------|----|--------|----------|----------|--------|
+| yes  | 23 | 60.9%  | +$27.49  | +$1.195  | $2.79  |
+| no   | 23 | 47.8%  | +$4.42   | +$0.192  | $2.68  |
 
-### Cross-Tabulation: Entry→Exit Price × Window Direction
+### NO-side gap (the headline number)
 
-| Cell | N | Wins | WR | PnL |
-|---|---|---|---|---|
-| PRICE_ROSE / window UP (double-adverse) | **45** | **34** | **75.6%** | **+$67.74** |
-| PRICE_ROSE / window DOWN (favorable) | 30 | 27 | 90.0% | +$93.53 |
-| FLAT / window UP (adverse) | 3 | 1 | 33.3% | -$2.75 |
-| FLAT / window DOWN (favorable) | 2 | 2 | 100% | +$8.82 |
-| PRICE_FELL / window UP (adverse) | 6 | 6 | 100% | +$18.88 |
-| PRICE_FELL / window DOWN (favorable) | 49 | 47 | 95.9% | +$130.93 |
+| sample           | n   | NO-side WR |
+|------------------|-----|------------|
+| paper backtest   | 256 | **82.8%**  |
+| live current     | 23  | **47.8%**  |
+| **gap**          |     | **−35.0 pp** |
 
-**The decisive cell: PRICE_ROSE / window UP (double-adverse).** The underlying
-price rose from entry to exit AND the window closed UP. By every directional
-measure, this position should lose. It wins 75.6% (34/45) with +$67.74 profit.
+User-quoted paper NO-side WR was 83–94%; the 82.8% measured here is the lower end and matches.
 
-### Mechanism (from tick data)
+### By symbol
 
-For the 45 double-adverse trades:
-- At **entry time**: 64% (29/45) had the underlying BELOW the window open price.
-  The momentum dip the bot detected was real — price was below open, making NO
-  look favorable. Average position vs open: **-0.018%**.
-- At **exit time** (30s before close): 96% (43/45) had the underlying ABOVE the
-  window open. The price recovered during the holding period.
-- Average holding period: **410 seconds** (entry at ~460s, exit at ~870s).
+| symbol | n  | WR    | P&L      | $/trade  |
+|--------|----|-------|----------|----------|
+| ETH    | 27 | 66.7% | +$45.53  | +$1.686  |
+| BTC    | 19 | 36.8% | **−$13.62** | −$0.717 |
 
-Despite the underlying recovering above open (adverse), the NO contract price
-increased from avg 0.383 to avg 0.640 — the bot sold at a higher price than it
-bought. This is the time-convergence mechanism: as expiry approaches, the NO
-contract's value reflects the declining probability of a reversal, not just the
-current direction. With only 30 seconds remaining, even a small distance above
-open yields significant NO time value.
+BTC alone is below breakeven.
 
-### YES Time_Exit by Entry→Exit Price (Confirmation of Broken)
+### Side × symbol
 
-| Cell | N | Wins | WR | PnL |
-|---|---|---|---|---|
-| PRICE_ROSE / window UP (favorable) | 20 | 0 | 0.0% | -$8.94 |
-| PRICE_ROSE / window DOWN (adverse) | 1 | 0 | 0.0% | -$1.00 |
-| FLAT / window DOWN (adverse) | 1 | 0 | 0.0% | -$3.14 |
-| PRICE_FELL / window UP (favorable) | 5 | 0 | 0.0% | -$3.51 |
-| PRICE_FELL / window DOWN (adverse) | 20 | 0 | 0.0% | -$36.06 |
-| **Total** | **47** | **0** | **0.0%** | **-$52.65** |
+| cell    | n  | WR    | P&L     |
+|---------|----|-------|---------|
+| yes/BTC | 8  | 50.0% | −$1.03  |
+| yes/ETH | 15 | 66.7% | +$28.52 |
+| no/BTC  | 11 | 27.3% | −$12.59 |
+| no/ETH  | 12 | 66.7% | +$17.01 |
 
-**0 wins out of 47 across ALL price directions and window directions.** YES
-time_exit is universally broken — not a directional issue.
+`no/BTC` is the single worst cell (27.3% WR, −$1.145/trade).
+
+### Routes
+
+All 46 closed live trades log as `taker` in `trades.db`. The Kalshi CSV shows 14 of those 50 orders actually had maker-leg partials (see Q0); the VPS doesn't track those splits.
+
+**Verdict: edge is DEGRADED, not broken.** The −35 pp NO-side gap is the headline number, but YES side actually beats paper (60.9% vs 20.4%) at n=23. The cause is identified in Q2 below — it's not signal quality, it's a code-path bug suppressing the exit.
 
 ---
 
-## Follow-Up Test B — P&L Decomposition (Price vs Time-Decay)
+## Q2 — EXIT-TYPE SPLIT *(the smoking gun)*
 
-### Model-Free Decomposition
+### Recorded `exit_reason` distribution
 
-For the 45 double-adverse trades (PRICE_ROSE + window UP), the directional
-component of PnL should be negative (underlying moved against NO position).
-Any positive PnL is therefore entirely attributable to time-decay / execution edge.
+| exit_reason         | paper (any time) | live (all time) |
+|---------------------|------------------|-----------------|
+| `time_exit`         | 208              | **0**           |
+| `orphan_reconciled` | 5                | 9               |
+| `(null/settlement)` | 156              | 919             |
 
-| Metric | Value |
+`exit_reason='time_exit'` appears **zero times across every live trade in the database**. The 208 paper time_exits are all from the 2026-05-19 → 2026-05-22 paper-only window.
+
+Cross-checks:
+
+- `bot.log` for the live cycle: **0 `exit_signal` events** across 4148 `no_signal` events.
+- Kalshi CSV: **0 sell orders** of any kind across 83 traded tickers. 81 tickers have exactly one Filled buy order plus a settlement; 2 tickers have only Canceled buy attempts.
+
+Live exit-type split:
+
+| exit type     | count | % of closed | WR     | P&L     |
+|---------------|-------|-------------|--------|---------|
+| time_exit     | 0     | 0%          | —      | —       |
+| settlement    | 46    | **100%**    | 54.3%  | +$31.91 |
+| orphan_reconciled | 3 | (6.5% of placed) | 0% | $0      |
+
+**Paper expected ~87% time_exit, ~13% settlement.** Live observed **0% time_exit, 100% settlement.** This is the hypothesis the user stated, confirmed.
+
+### Live `time_exit` WR in isolation
+**Cannot determine — zero observations.**
+
+### Mechanism: why isn't the time_exit firing?
+
+This is *not* a WS-staleness problem (see Q3 — staleness was fresh during T-30s on every live trade I sampled). It is a code-path bug.
+
+The per-tick loop in `main.py:780–907` evaluates a fresh signal first, then calls `await _evaluate_exits(...)` at `main.py:903`. But every `signal is None` branch (most ticks) **`continue`s before reaching the exit eval**:
+
+```python
+# main.py ~line 820
+if signal is None:
+    ...
+    _record_reason(..., "no_signal", ...)
+    continue          # ← skips _evaluate_exits below
+...
+# only this branch falls through:
+submit_result = await executor.submit(signal, cached.balance)
+...
+# main.py:903 — only reachable if a fresh signal was generated
+await _evaluate_exits(executor, ticker, best_yes_bid, best_no_bid, alerter, window)
+```
+
+Other early-`continue` paths that bypass exit eval:
+- `RiskVetoError` (37 events in current cycle)
+- `yes_side_disabled` (irrelevant currently, but same pattern)
+- `skip_no_orderbook` (110 events) and `skip_stale_orderbook` (15 events)
+
+The time_exit condition (`main.py:1506`) requires:
+
+```python
+order.signal.seconds_remaining > 90 and window.seconds_remaining < 30
+```
+
+For 51 live trades, 77 of 86 trade-action signals entered with `seconds_remaining > 90` (eligible) — but the exit eval has to actually be **called** in the final 30s, and that only happens if there's *also* a fresh signal at that exact tick. There essentially never is — by T-30s, momentum/LWM almost always returns `None` (price out of bounds, edge gone, momentum/OBI sign mismatch, etc.).
+
+Empirical proof: traced `KXETH15M-26MAY231030-30` (entered 14:22:18, settled 14:30:11). Between 14:29:30 and 14:30:15 there is **exactly one event** for this ticker — a `no_signal` at `seconds_remaining=29`. That `no_signal` `continue`d, the exit eval never ran, and the position fell through to settlement instead of selling at the favorable T-30s bid.
+
+**Verdict:** the edge is intact — the *exit path is dead code in live mode 99% of the time*. Fixing this should restore most of the paper performance. The user's hypothesis was right in direction (time_exit isn't firing → trades settle ~50/50), wrong on cause (it's a control-flow bug, not WS staleness).
+
+---
+
+## Q4 — SETTLEMENT REFERENCE: STRIKE vs OPEN *(validation-breaking)*
+
+### Bot's direction labeling
+
+`data/window_tracker.py:198`:
+
+```python
+went_up = win.current_price >= win.open_price
+```
+
+The bot defines "yes wins" as **Coinbase-close ≥ Coinbase-open**, and the backtest's `market_events.result` column is derived this way. The P0 / Test A / Test C results were validated on this column.
+
+### What Kalshi actually settles on
+
+Market titles in the Kalshi UI use fixed strikes (e.g. *"BTC 15min, $75,133.39 target"*). The ticker suffix (`-15`, `-30`, `-45`, `-00`) is the strike-grid index, not minutes. The bot's `Market` pydantic model (`models/market.py`) does not even ingest a strike field — it reads `ticker`, `title`, `status`, `open_time`, `close_time`, and the four BBO prices only.
+
+### Empirical mismatch
+
+Joined `market_events` (bot-recorded close/open + `result`) to the Kalshi-CSV `Settlement` rows for 78 settled tickers in the current cycle:
+
+- **Match: 62/78 (79.5%)**
+- **Mismatch: 16/78 (20.5%)**
+
+All 16 mismatches are *narrow-move windows*. Examples:
+
+| ticker                    | open      | close     | Δ      | bot says | Kalshi says |
+|---------------------------|-----------|-----------|--------|----------|-------------|
+| KXETH15M-26MAY230545-45   | 2027.23   | 2026.77   | −0.46  | no       | **yes**     |
+| KXETH15M-26MAY231030-30   | 2043.40   | 2044.32   | +0.92  | yes      | **no**      |
+| KXETH15M-26MAY221230-30   | 2117.88   | 2118.21   | +0.33  | yes      | **no**      |
+| KXETH15M-26MAY222015-15   | 2061.20   | 2063.89   | +2.69  | yes      | **no**      |
+| KXBTC15M-26MAY222215-15   | 75418.21  | 75374.21  | −44.00 | no       | **yes**     |
+| KXBTC15M-26MAY230015-15   | 75540.01  | 75534.00  | −6.01  | no       | **yes**     |
+| KXBTC15M-26MAY230845-45   | 74646.00  | 74646.00  | +0.00  | yes      | **no**      |
+
+The mismatches cluster on small Δ — exactly the boundary region where the strike (somewhere between open and close, but not equal to open) flips the outcome.
+
+### Implications
+
+1. **The bot's "ground truth" for backtest direction is wrong about 1 in 5 windows.** Every signal/probability model calibrated on `market_events.result` is fitting a slightly mislabeled target.
+2. **P0 / Test A / Test C cannot be considered validated** — they all use the bot's open-based direction. Test C in particular ("edge survives in adverse windows") depends on correct adverse-vs-favorable labeling, which is wrong ~20% of the time.
+3. **Re-running with the true strike requires data the bot doesn't capture.** Options:
+   - Backfill `cap_strike` / `floor_strike` / `expected_expiration_value` by re-fetching `/markets/{ticker}` for each historical ticker (Kalshi will return strike fields).
+   - Parse strike from Kalshi market titles (the `$XX,XXX.XX target` string).
+
+I cannot re-run P0/Test A from existing data on this VPS.
+
+**Verdict: settlement is strike-based. The bot is comparing against the wrong reference, and the backtest's edge claim is unvalidated until this is fixed.**
+
+---
+
+## Q0 — DATA INTEGRITY: VPS log vs Kalshi CSV
+
+CSV scope: `2026-05-22T14:58Z → 2026-05-23T14:30Z`. 223 rows = 85 Order rows (50 Filled, 33 Canceled, 2 misc) + 54 Trade rows (across 50 fill UUIDs) + 83 Settlement rows + 1 Deposit.
+
+### Critical: UUIDs don't match
+
+The bot stores `order_resp["order_id"]` (per `executor.py:303`) in `trades.order_id`. **Not one of the 50 VPS UUIDs from the live cycle appears in the Kalshi CSV's `Market_Id` column.**
+
+Concrete example for `KXETH15M-26MAY231030-30`:
+
+- `bot.log` placed: `b28beb1f-87d0-4f57-8d6d-8d54f06e4dc6` (returned from POST `/portfolio/orders`)
+- Kalshi CSV `Market_Id`:  `37f64484-d7bc-44fb-bc9f-8d5d1fa94102`
+
+Both UUIDs are real UUIDv4 strings for the same trade (same ticker, same timestamp to the millisecond, same contracts, same direction). Either:
+
+- Kalshi's POST `/portfolio/orders` response returns a value (`order_id`) that is **not** the same identifier the portfolio export uses, or
+- the bot is reading the wrong field (e.g. `client_order_id` echoed back) into `order_id`.
+
+This is a real reconciliation hazard going forward — any future audit by UUID will fail silently. Fix: persist both `client_order_id` (bot-generated UUID) AND any additional ID fields the Kalshi response carries, so the export ID can be reconstructed.
+
+### Reconciliation by `(ticker, side)` natural key
+
+50 Kalshi-side aggregated fills ↔ 50 VPS rows — **100% matched, 0 VPS-only, 0 Kalshi-only, 0 contract-count mismatches.**
+
+| metric                                    | result    |
+|-------------------------------------------|-----------|
+| exact fill price (Δ<0.01¢)                | 13 / 50   |
+| within ±1¢                                | 17 / 50   |
+| within ±2¢                                | 21 / 50   |
+| Kalshi paid LESS than VPS recorded (Δ<−0.5¢) | **34 / 50** |
+| Kalshi paid MORE than VPS recorded (Δ>+0.5¢) | 3 / 50  |
+| avg Δ (Kalshi − VPS)                      | **−1.86¢** |
+| median                                    | −3.0¢     |
+| min / max                                 | −6.0¢ / +3.0¢ |
+
+The negative direction means **the bot got BETTER fills than it recorded** — VPS is pessimistic. Source: 14 of the 50 orders ended up with a maker/taker mix on Kalshi (the bot resubmits as taker after a maker timeout, but Kalshi sometimes fills the original maker leg first at a better price). The VPS logs them all as taker at the resubmit price.
+
+### Fees
+
+Avg fee diff (VPS − Kalshi) = **+2.1¢ / trade** (total +$1.05 across 50). VPS overstates fees, again because it doesn't see the maker rebate.
+
+### Realized P&L
+
+| | total | per-trade |
+|---|---|---|
+| VPS recorded (n=45 with non-null pnl) | +$35.89 | +$0.797 |
+| Kalshi actual                         | +$39.89 | +$0.886 |
+| diff (VPS − Kalshi)                   | **−$4.00** | **−$0.089** |
+
+**Verdict: VPS is FAITHFUL with a slight PESSIMISTIC bias (~9¢/trade understated).** Paper/backtest numbers built on this log are NOT optimistically biased and don't need a downward adjustment. If anything they're slightly conservative.
+
+### Edge cases
+
+| issue                                           | count | notes                                                    |
+|-------------------------------------------------|-------|----------------------------------------------------------|
+| VPS-only trades (not in CSV)                    | 0     | —                                                        |
+| CSV-only trades (not in VPS)                    | 0     | —                                                        |
+| Partial fills logged as full                    | 0     | contract counts match perfectly                          |
+| VPS `pnl=NULL` while Kalshi settled             | 5     | 3 orphan_reconciled + 2 still open. Net Kalshi P&L on the 3 orphans = −$1.09. VPS counted $0. |
+| Canceled Kalshi orders with no VPS row          | 33    | Expected — maker timeouts cancelled before fill, before VPS persisted the row. |
+| Stale-WS settlements with VPS/Kalshi direction disagreement | 0 | — |
+
+---
+
+## Q3 — WEBSOCKET STALENESS
+
+### Frequency (current live cycle)
+
+`HEALTH` events emit `kalshi_ws_age_s` ~ every 60s. 1,444 samples in the cycle:
+
+| age bucket    | samples | % of cycle |
+|---------------|---------|------------|
+| < 1s          | 1404    | 97.2%      |
+| 1–5s          | 5       | 0.3%       |
+| 5–10s         | 10      | 0.7%       |
+| 10–20s        | 18      | 1.2%       |
+| 20–30s        | 4       | 0.3%       |
+| 60–120s       | 1       | 0.1%       |
+| 120–300s      | 2       | 0.1%       |
+| **median**    | **0.02s** | |
+| p99           | 14.6s    | |
+| max           | **197.8s** | |
+
+`kalshi_ws_stale=true` HEALTH records in the cycle: **3**, all from one outage block.
+
+WS reconnects logged in the cycle: **0** (the outage was a silent feed gap, not a TCP drop).
+
+Telegram `Kalshi WS stale: …` alerts in the cycle: **0**. The `_send_once` pattern in `main.py:444` fires exactly once per healthy→stale→healthy edge; the user's "repeated 30–31s" reports were likely from earlier days (the May 19–22 paper period had similar blips that aren't in the current live cycle).
+
+### Distinct outage windows in live cycle
+
+| # | start (UTC)            | end (UTC)              | span | peak age |
+|---|------------------------|------------------------|------|----------|
+| 1 | 2026-05-23T08:00:13   | 2026-05-23T08:10:27   | 10m  | 197.8s   |
+
+Plus 26 isolated single-sample blips (5–26s, one per minute-sample) which probably represent ≤ a few seconds of real lag each (HEALTH only samples once a minute, so anything shorter than ~60s gets aliased).
+
+### Impact on trade outcomes
+
+No live trade entered during the 08:00–08:10 outage. The bot's first fill that day after the outage was at 08:13:25 — well past recovery.
+
+More importantly: **0 of the 46 live closed trades had a stale-WS event at their T-30s window**. Spot-checked 5 trades; each had healthy WS state through final 30s. The lost time_exits cannot be attributed to staleness because **no time_exit fired even on trades with a perfectly fresh WS at T-30s** — Q2 is the cause.
+
+### P&L attributable to missed exits caused by staleness
+
+**≈ $0** in the current live cycle. (Even fixing WS perfectly would not have produced a single time_exit, because the exit-eval code path is dead — see Q2.)
+
+### Cause of the 08:00 outage
+
+`messages_total` flatlined for ~200s without firing a reconnect. The 5s `kalshi_ws_health_alert` warning fires constantly but does not gate a reconnect — the reconnect loop is on the websocket's own ping/pong, which didn't trigger. No REST fallback fired. Recommend a "no-message for N seconds → force resubscribe" watchdog.
+
+---
+
+## Q5 — LIVE FILL QUALITY
+
+### Entry slippage (Kalshi fill avg − VPS signal price, 50 entries)
+
+| stat   | cents |
+|--------|-------|
+| median | **−3.0¢** (bot paid less than expected) |
+| mean   | −1.86¢ |
+| p10    | −4.0¢ |
+| p90    | 0.0¢   |
+| max bad| +3.0¢ |
+| min good | −6.0¢ |
+
+Distribution: 13 exact-match (Δ<0.01¢), 17 within 1¢, 21 within 2¢. 34 of 50 trades got a BETTER fill than VPS recorded; only 3 got worse.
+
+This is well inside the Monte Carlo robustness band (paper claimed robust up to ~38¢ breakeven slippage). **Live fills are NOT worse than paper assumed.** The reverse — they're slightly better, because of unrecorded maker-leg partials.
+
+By route: all 50 fills were "taker" per VPS. By Kalshi-side route mix (across constituent Trade rows): 36 taker-only, 14 with at least one maker partial. The 14 maker-mixed fills account for most of the favorable slippage.
+
+### Exit slippage
+
+**Cannot determine.** No live exits fired (Q2). Once the exit path is fixed, this becomes measurable as `intended exit bid at T-30s vs realized sell price`.
+
+### Adverse selection check
+
+Of the 3 trades that filled at *worse* prices than expected (positive slippage):
+
+- 1 win (+$3.86)
+- 2 losses (−$2.81, −$9.44)
+
+Of the 34 trades that filled at *better* prices (negative slippage):
+
+- WR 60% (n=34)
+
+No clear adverse-selection signal at this n. But the sample is too small (n=3 worse-fill trades) to conclude either way. **Inconclusive.**
+
+---
+
+## Q6 — YES SIDE, POST-WINDOW-RESTRICTION
+
+The "Fix B" YES restriction (LWM cap at 120s from window close) landed at commit `64a0218` on `2026-05-22T03:30:40Z` — well before the 15:03 live cutoff. So 100% of live YES trades happened post-fix.
+
+### YES live, current cycle (23 trades, all closed)
+
+| metric        | value |
+|---------------|-------|
+| n             | 23 |
+| WR            | **60.9%** (14 wins, 8 losses, 1 zero) |
+| net P&L       | **+$27.49** |
+| P&L / trade   | +$1.195 |
+| fees          | $2.79 |
+
+By symbol:
+
+- yes/ETH: n=15, WR 66.7%, +$28.52
+- yes/BTC: n=8,  WR 50.0%, −$1.03
+
+### Caveat: Fix B didn't actually constrain this sample
+
+All 23 live YES trades came from the **momentum** strategy, which has NO `yes_decision_max_s` cap. The 120s cap is in `strategy/lwm.py:136` only. The LWM strategy produced **zero live YES trades** in the cycle. Distribution of momentum YES entries by `seconds_remaining` at signal:
+
+| bucket  | count |
+|---------|-------|
+| <120s   | 4     |
+| 120–240 | 6     |
+| 240–360 | 6     |
+| ≥360    | 24 (incl. duplicate action='trade' rows) |
+
+So Fix B's intended effect can't be measured here — LWM YES is silent in live.
+
+### Recommendation: **KEEP YES side enabled**
+
+It's the strongest live contributor by $/trade. Don't disable. Also: momentum-strategy YES doesn't get the Fix B benefit, but it's profitable anyway. If LWM YES eventually starts producing live signals, watch the late-entry tail (<120s) since that's where Fix B is supposed to bite.
+
+---
+
+## Q7 — RISK SNAPSHOT AT CURRENT SIZING
+
+### Config (`/root/kalshi-bot/kalshi-bot-v2/.env`)
+
+| setting                       | current value | SWITCH_TO_LIVE.md recommendation |
+|-------------------------------|---------------|----------------------------------|
+| `TRADING_MODE`                | live          | live                             |
+| `KELLY_FRACTION`              | **0.625**     | 0.10 (first week)                |
+| `MAX_PER_TRADE`               | $25.00        | $10.00                           |
+| `MAX_CONCURRENT_POSITIONS`    | 3             | 2                                |
+| `DAILY_LOSS_LIMIT`            | $10.00        | $25.00                           |
+| `PER_SIDE_DAILY_LOSS_LIMIT`   | $5.00         | $10.00                           |
+| `EDGE_THRESHOLD`              | 0.04          | —                                |
+| `MIN_TRADE_PRICE`             | 0.25          | —                                |
+| `MAX_TRADE_PRICE`             | 0.85          | —                                |
+
+Kelly is **6.25× over the documented first-week recommendation**. The `DAILY_LOSS_LIMIT` ($10) is tighter than recommended, which partly compensates but only after harm.
+
+### Balance & exposure
+
+- Current Kalshi balance (`live_state.json`): **$20.00**
+- Daily P&L at scan: +$14.15
+- Open positions: 0 (at scan; 5 still open at earlier point in cycle)
+- Largest single-trade notional exposure observed:
+  - **$8.99** = 31 contracts × $0.29 (BTC NO, `KXBTC15M-26MAY221730-30`, 2026-05-22T21:22)
+  - That's **45% of the $20 balance** on one position
+  - Next largest: $6.44 (14 × $0.46, ETH NO), $6.30 (18 × $0.35, ETH NO)
+
+### Drawdown (current cycle, peak-to-trough on cumulative P&L)
+
+- Peak cumulative P&L: **+$35.89** at 2026-05-23T14:22
+- Worst drawdown: **−$20.51** (from intra-period peak +$29.71 on May 22 16:23 to trough +$9.20 on May 22 21:22)
+- As % of starting balance ($20): **103%**
+- Recovery time: ~17 hours
+
+The bot survived a >1× drawdown intra-day, then recovered. Largely on luck given the broken exit path.
+
+### Per-trade economics at observed live entry prices
+
+Avg entry price = **0.390**, avg fee/contract = **$0.0165**.
+
+Breakeven WR at this average: **40.6%** (since `wr = entry_price + fee_per_contract`).
+
+| | value |
 |---|---|
-| Net PnL (these 45 trades) | **+$67.74** |
-| Total fees | $7.99 |
-| Gross PnL | +$75.73 |
-| Directional component (expected sign) | **Negative** (price rose = NO loses) |
-| Time-decay component | **+$67.74 or more** (entire net PnL + absorbed directional loss) |
+| Live WR | 54.3% |
+| Breakeven WR | 40.6% |
+| Margin above breakeven | **+13.7 pp** |
+| Theoretical edge / trade @ avg sizing (7.2 contracts) | $0.989 |
+| Actual P&L / trade observed | $0.694 |
 
-Since the directional component is negative by construction (the underlying moved
-against the position), 100% of the net PnL is time-decay/execution edge. In fact,
-the time-decay component must be larger than +$67.74 because it also had to
-overcome the adverse directional component to produce a positive net.
+The 30¢ gap between theoretical and actual is mostly fee drag + the 3 losing-on-bad-fill trades.
 
-### Contract Price Behavior
+### Breakeven sensitivity to entry price
 
-- Average NO entry price: **$0.383**
-- Average NO exit price: **$0.640**
-- Average contract price increase: **+$0.257**
+| avg entry | breakeven WR |
+|-----------|--------------|
+| 0.30      | 31.6%        |
+| 0.35      | 36.6%        |
+| **0.39 (current)** | **40.6%** |
+| 0.45      | 46.6%        |
+| 0.50      | 51.6%        |
 
-The NO contract INCREASED in value by 25.7 cents despite the underlying moving
-against it. In the 35/45 winning trades (78%), the exit contract price was higher
-than entry. In the 10/45 losing trades, the contract price decreased.
+If avg entry drifts to 50¢ (very plausible during low-volatility windows), the live 54.3% WR leaves only a 2.7-pp cushion. The strategy needs the time_exit edge restored to be robust to price drift.
 
-### Interpretation
-
-This is not a pricing anomaly — it is the fundamental mechanics of binary options
-near expiry. With 30 seconds remaining, a binary option's value is dominated by
-the probability of crossing the strike in the remaining time, not the current
-direction of movement. The bot enters during a momentum dip (when NO is cheap
-because the market perceives a falling trend) and exits near expiry (when NO
-reflects the actual probability of a last-second reversal). The difference is the
-time-decay capture.
+**Verdict: above breakeven on live numbers (54.3% live WR vs 40.6% breakeven, +13.7 pp).** But the cushion is propped up by directional luck on settlements, not by the designed edge.
 
 ---
 
-## Follow-Up Test C — YES-in-UP Settlement Anomaly (RESOLVED)
+## RECOMMENDATION
 
-### The Anomaly
+**PAUSE LIVE TRADING. Fix the two specific issues below before re-enabling. Sizing down alone is not enough.**
 
-The original P0 matrix reported YES-in-UP settlement at 13.9% WR (23/166). This
-was flagged as anomalous: if the contract settles YES when close > open, and the
-window direction is UP, then YES settlement should be ~100% WR.
+The bot is currently profitable, but **for the wrong reason**. The designed edge — capturing favorable bid moves at T-30s via time_exit — is contributing **zero**. 100% of live trades are reaching settlement. The 54% live WR is essentially "directional momentum picks the right side ~54% of the time when it has enough signal to fire." This will revert toward 50% as soon as the directional luck normalizes.
 
-### Root Cause: Labeling Bug
+### Required fixes (in order)
 
-Investigation revealed that `exit_reason` in the trades database is NULL for BOTH:
-1. True binary settlements (record_settlement() doesn't set exit_reason)
-2. Older exits from code versions before exit_reason tracking was implemented
-   (maker timeouts, stop_loss, edge_gone exits all wrote pnl without exit_reason)
+1. **Hoist `_evaluate_exits` out of the signal-eval branch.**
+   - File: `src/kalshi_bot/main.py`, around line 903.
+   - Today the exit eval only runs when a fresh entry signal succeeds — which is ~1% of ticks, and almost never near T-30s.
+   - Restructure so the exit eval runs on every per-symbol tick that has (a) an open filled order for the active ticker, (b) a fresh orderbook (`age <= ORDERBOOK_STALENESS_S`). Specifically: move the `_evaluate_exits` call BEFORE the `continue` on `signal is None`.
+   - Add an `exit_signal` log line and an `exit_reason='time_exit'` column write on every fire so it's measurable.
+   - Add a unit test: simulate a filled order + window with `secs_remaining=29` + no fresh entry signal, assert exit eval is called.
 
-**Of 324 trades with `exit_reason = NULL`:**
-- True settlements (PnL matches binary formula): **26** (8%)
-- Cancelled/maker-timeout (PnL ≈ 0): **2** (1%)
-- Unlabeled exits from older code: **296** (91%)
+2. **Capture and use Kalshi strikes.**
+   - File: `src/kalshi_bot/models/market.py` (extend `Market` to ingest `cap_strike` / `floor_strike` / `expected_expiration_value` / strike from market title).
+   - File: `src/kalshi_bot/client/kalshi.py` `_parse_market` — pull strike fields from the API response.
+   - File: `src/kalshi_bot/data/window_tracker.py:198` — replace `went_up = current_price >= open_price` with `went_up = current_price >= strike`.
+   - Backfill `market_events.result` by re-fetching `/markets/{ticker}` for all historical tickers, or parsing the strike from `market.title`.
+   - Re-run P0 / Test A / Test C with the corrected direction column. Treat the previous edge claim as unvalidated until this is done.
 
-The "166 YES-in-UP settlements" were actually ~6 true settlements mixed with ~158
-unlabeled exits. The unlabeled exits had diverse PnL values that don't match
-binary settlement math, confirming they were exits at market prices, not
-settlements.
+### Secondary fixes
 
-### Corrected Settlement Data
-
-| Cell | N | Wins | WR |
-|---|---|---|---|
-| YES in UP (favorable) settlement | 6 | 6 | **100%** |
-| NO in DOWN (favorable) settlement | 10 | 10 | **100%** |
-| NO in UP (adverse) settlement | 3 | 0 | **0%** |
-
-Settlement now behaves exactly as theory predicts: 100% WR when direction matches
-the bet side, 0% WR when it doesn't. The settlement logic is correct. The anomaly
-was purely a data-labeling artifact from conflating settlement with unlabeled exits.
+- **Persist both UUIDs** (`order_id` and Kalshi's portfolio-export ID) so future reconciliations join cleanly. Right now any future audit will fail UUID-keyed and silently miss data quality issues.
+- **WS feed watchdog**: force resubscribe after N seconds without any message (saw one ~200s silent outage with no reconnect attempt). Current `kalshi_ws_health_alert` is observability-only and doesn't trigger reconnection.
+- **Sizing back to plan**: `KELLY_FRACTION=0.10`, `MAX_PER_TRADE=$5.00` until both fixes ship. The bot just survived a 103%-of-balance drawdown by luck.
+- **Capture exit-fill data**: once Q2 is fixed, log the intended exit bid (last snapshot) and actual exit fill so Q5's exit-slippage metric becomes measurable.
+- **Fix `exit_reason` column writes for live trades**: currently always NULL on live (only paper paths set it). Verify the live exit code writes `exit_reason='time_exit' | 'settlement' | 'orphan_reconciled'` consistently.
 
 ---
 
-## P1 — Regime Detector
+## Things that could not be determined from available data
 
-The bot does not have a regime detector that gates entries. The "regime" feature
-in the codebase is display-only (used in AI window analysis commentary). Entries
-are gated by: momentum direction + OBI sign agreement + edge threshold + time
-bounds. No regime label blocks or permits entries.
-
-Since the regime label is not used in the decision path, A/B testing it is not
-applicable — the ON/OFF comparison would be identical.
-
----
-
-## P2 — 50-Day Regime Characterization
-
-As shown in the P0 section: **51.3% UP / 48.7% DOWN across 5,937 windows.**
-Daily ranges 45.6% — 57.3%. There is no single-direction regime.
-
-The runs ratio of 0.68 confirms direction persistence (clustering), which is a
-structural property of 15-minute crypto windows, not a temporary condition. This
-persistence benefits the momentum signal by ensuring that the dip that triggered
-entry is more likely to continue until the T-30s exit.
+- **Live `time_exit` WR in isolation** — zero observations to measure.
+- **Whether P0 / Test A / Test C edge survives strike-based direction labeling** — requires backfilling strike from Kalshi market metadata.
+- **Pre-May-04 live period performance** — 467 of 928 rows have `pnl=0` AND `fees=NULL` (legacy schema, untracked outcomes).
+- **Exit slippage distribution** — no live exits to measure.
+- **Specific root cause of the 2026-05-23T08:00 WS outage** — `messages_total` flatlined for ~200s with no reconnect or resync log lines. Likely silent TCP keepalive issue; needs better instrumentation.
+- **Adverse selection on entry fills** — only 3 trades filled at worse-than-signal prices, n is too small to draw a conclusion.
+- **Which paper-WR `time_exit` cell most closely matches the live momentum-on-settlement performance** — would require running the paper backtest with `time_exit` disabled, which can be done but wasn't part of this analysis.
 
 ---
 
-## P3 — Fill Model: Maker vs Taker
+## Appendix A: data sources used
 
-| Route | N | WR | PnL | Fees |
-|---|---|---|---|---|
-| Maker | 228 | **20.6%** | **-$7.96** | $11.77 |
-| Taker | 274 | 50.7% | +$245.15 | $27.18 |
+| source | path | scope |
+|---|---|---|
+| VPS trade log | `/root/kalshi-bot/kalshi-bot-v2/trades.db` (`trades`, `signals`, `market_events`, `window_snapshots`) | All-time |
+| Kalshi portfolio export | `/root/fromkalshi/data.csv` | 2026-05-22T14:58Z → 2026-05-23T14:30Z |
+| Bot runtime logs | `/root/kalshi-bot/kalshi-bot-v2/logs/bot.log*` | 2026-04-21 → present |
+| Live state | `/root/kalshi-bot/kalshi-bot-v2/live_state.json` | snapshot at scan |
+| Code paths cited | `src/kalshi_bot/main.py:780–907,1472–1520`, `execution/executor.py`, `data/window_tracker.py:198`, `models/market.py`, `client/kalshi.py:182–225` | — |
 
-**Maker is net negative even in paper mode with instant simulated fills.** This is
-the adverse selection the skeptic predicted: maker orders fill when the market
-moves against the signal (someone crosses the spread because the price is moving
-away from the maker's position). The 20.6% WR vs taker's 50.7% is a 30-point gap.
-
-The paper maker model assumes instant fills at the bid price, which is unrealistic.
-Real maker fills would face:
-- Adverse selection (fills happen when the market moves against you)
-- Partial fills
-- Queue priority behind existing orders
-
-**Recommendation: disable maker-first execution for live trading.** The fee
-savings (1.75% vs 7%) do not compensate for the 30pp WR reduction.
-
-The taker model assumes fills at the ask price, which is realistic for these
-contract sizes (1-10 contracts vs 30,000+ depth on the book). Slippage is
-modeled with a 2-cent buffer on taker promotion.
+All P&L numbers are in USD. All timestamps are UTC unless otherwise noted. Trade counts: current live cycle = 51 placed, 46 closed with recorded P&L, 5 still open at scan.
 
 ---
 
-## P4 — Time-Exit Mechanism
+## Appendix B: one-line summary per question
 
-### Code Path Verification
-
-The exit bid is read from the orderbook snapshot at the moment `_evaluate_exits()`
-runs in the housekeeping loop (5-second cadence). The snapshot is either from the
-live Kalshi WebSocket feed (sub-second freshness) or a REST fallback with a
-staleness guard (≤15 seconds). There is no forward look-ahead — the bid used for
-the exit decision is the most recent bid available at or before the decision
-timestamp.
-
-### Time-Exit vs Direction Correlation
-
-| Cell | N | WR | PnL |
-|---|---|---|---|
-| NO time_exit in favorable (DOWN) | 77 | 94.8% | +$224.00 |
-| NO time_exit in adverse (UP) | 50 | 76.0% | +$81.19 |
-| YES time_exit in favorable (UP) | 25 | 0.0% | -$12.45 |
-| YES time_exit in adverse (DOWN) | 22 | 0.0% | -$40.20 |
-
-The time_exit P&L correlates with direction (94.8% favorable vs 76.0% adverse)
-but is **profitable in both**. This means the time_exit is not simply restating
-"the underlying moved in our direction." It captures a distinct mechanism:
-favorable mark-to-market from intra-window momentum that may not persist to
-settlement.
-
-The YES-side time_exit at 0% WR in both directions confirms this is a NO-specific
-execution edge, not a general timing edge.
-
-### Window Change Distribution for NO-in-UP Trades
-
-When NO wins in an UP window, the window's final price change is smaller:
-- Winning NO-in-UP trades: mean window change = **+0.070%**
-- Losing NO-in-UP trades: mean window change = **+0.102%**
-
-The bot profits in UP windows that are only weakly up — the intra-window dip that
-triggered entry persists long enough for a profitable exit before the window fully
-reverses upward.
-
----
-
-## P5 — Calibration
-
-The logistic model's predicted P(up) is used for edge computation, not as a
-direct directional bet. A full calibration analysis (bucket by predicted
-probability, measure actual outcome frequency on held-out data) requires running
-the backtester with per-trade probability logging, which is not currently stored
-in the production trades table. **This question cannot be fully answered from the
-available data.**
-
-However, the directional accuracy of 64.7% against a 51.3% UP base rate
-suggests the entry signal has modest but real directional information — the edge
-computation is not purely noise.
-
----
-
-## P6 — Sizing and Ruin at Kelly 0.625
-
-### Realized Per-Trade P&L Distribution (NO side only, current config)
-
-- NO trades: 167 total
-- Mean PnL per trade: +$1.98
-- Winning trades: 137 (82.0% WR), avg win: +$2.69
-- Losing trades: 30 (18.0%), avg loss: -$1.24
-- Best trade: +$6.96
-- Worst trade: -$3.39
-
-### Kelly Considerations
-
-Kelly 0.625 at a $25 paper balance means the bot sizes as if the bankroll is
-$15.63 (0.625 × $25). With a capped `MAX_COST_DOLLARS = $25` and `MAX_CONTRACTS = 10`,
-the effective position size is constrained by these hard caps before Kelly scaling
-dominates.
-
-**Key risk with Kelly 0.625:** the edge is execution-dependent (time_exit fill
-quality), not statistical. A Kelly fraction optimized for the realized win rate
-assumes the win rate is stable. If live execution degrades the time_exit fill
-rate (slippage, thin books near settlement), the realized win rate drops and the
-oversized Kelly leads to accelerated drawdown.
-
-**Recommendation:** start live at Kelly 0.25 until the live time_exit fill rate
-is validated against the paper rate. Increase only with evidence that live fills
-match paper fills.
-
-### Regime Reversal Stress
-
-Since the market is 51.3%/48.7% (not regime-dependent), a "regime reversal" is
-not the primary risk. The primary risk is degradation of the time_exit fill
-mechanism in live trading. If the time_exit WR drops from 76% (adverse windows)
-to ~50%, the NO side becomes breakeven after fees.
-
----
-
-## P7 — Fee Drag
-
-| Metric | Value |
+| Q | answer |
 |---|---|
-| Gross PnL (before fees) | $276.14 |
-| Total fees | $38.95 |
-| Net PnL | $237.19 |
-| **Fee drag** | **14.1% of gross** |
-
-### By Route
-
-| Route | Gross | Fees | Net | Drag |
-|---|---|---|---|---|
-| Maker | $3.81 | $11.77 | -$7.96 | 309% |
-| Taker | $272.33 | $27.18 | +$245.15 | 10.0% |
-
-Maker fee drag exceeds gross profit — the route is a net destroyer of value.
-Taker fee drag at 10% is sustainable.
-
-### Breakeven Win Rate
-
-For NO taker trades at mean entry $0.44 with 7% taker fee:
-- Fee per contract: ~$0.017
-- Breakeven requires: WR > fee/(avg_win_size + fee) ≈ 40%
-- Current NO WR (taker only): well above breakeven
-
----
-
-## Effective Sample Size
-
-- Unique windows traded: 502
-- Total trades: 502 (1 trade per window — no double-counting)
-- However, consecutive 15-minute windows share underlying state (runs ratio 0.68)
-- Effective independent observations: roughly 502 × 0.68 ≈ **341**
-- The NO-in-UP cell (n=50 time_exit trades) is the smallest critical sample —
-  large enough to be meaningful but should be monitored as live data accumulates
-
----
-
-## Summary of Findings
-
-### What the Evidence Supports
-
-1. **The bot has a real execution edge via NO-side time_exit.** Three independent
-   tests confirm this:
-   - P0: NO time_exit wins 75.9% in adverse (UP) windows (n=54)
-   - Test A: NO time_exit wins 81.3% when the underlying ROSE entry→exit (n=75)
-   - Test A decisive cell: wins 75.6% when price ROSE AND window closed UP (n=45)
-   - Test B: 100% of net PnL in double-adverse trades is time-decay (directional
-     component is negative by construction)
-
-2. **The market is balanced (51/49), not regime-dependent.** The edge does not
-   require a down market to work.
-
-3. **The edge is narrow and mechanism-specific.** It works on NO time_exit only.
-   YES is structurally broken (0/47 across all price directions and window
-   directions). Maker route is net negative. Settlement-only has no edge over
-   direction.
-
-4. **Settlement logic is correct.** Test C confirmed that all settlement cells
-   behave exactly as theory predicts (100% WR favorable, 0% adverse). The
-   earlier 13.9% anomaly was a labeling artifact.
-
-### What the Evidence Does NOT Support
-
-1. **Predictive edge on settlement direction.** At settlement, NO-in-adverse is
-   0/3. The bot cannot predict which way the window will close.
-
-2. **YES side viability.** 0/47 YES time_exits profitable across ALL entry→exit
-   price directions. Not a sample size issue.
-
-3. **Maker route viability.** 20.6% WR, net -$7.96 even in paper mode.
-
-### Known Risks for Live Trading
-
-1. **Time_exit fill quality** — the entire edge depends on selling at or near the
-   bid at T-30 seconds. Paper assumes instant fills. Live execution may face
-   thin books, slippage, or bid drops near settlement.
-
-2. **Kelly 0.625 is aggressive** for an untested-in-live execution edge.
-
-3. **NO-in-adverse sample** (n=54 time_exit, n=45 decisive cell) is meaningful
-   but should be monitored as live data accumulates.
-
-### Honest Assessment
-
-The bot is not a prediction engine. It is an **intra-window time-decay scalper**
-with a specific execution edge: enter on a momentum dip (when NO is cheap), exit
-via time_exit before the final direction is determined (when the binary option's
-time value has converged). The NO contract's value increases as expiry approaches
-because the probability of a last-second reversal decreases — this is the time
-decay the bot captures, even when the underlying moves against the position.
-
-This edge is real, narrow, and asymmetric (NO side only). The primary risk is not
-regime change or directional exposure but execution degradation in live trading.
-
----
-
-*Data source: trades.db, window_analyses, and price_ticks tables from the
-production VPS. All queries are reproducible from the SQLite database. No data was
-excluded. Trade reclassification methodology: PnL matched against binary settlement
-formula within 2-cent tolerance. Underlying prices from Coinbase feed at sub-second
-granularity with ±30s matching window.*
+| Q0 | VPS log faithful, slight pessimistic bias (~9¢/trade understated). UUIDs don't match between VPS and Kalshi CSV — natural-key join works 100%. |
+| Q1 | Live WR 54.3% vs paper 63.7%; NO-side gap −35 pp (paper 82.8% → live 47.8%); YES side beats paper (60.9% vs 20.4%). |
+| Q2 | **0 live time_exits**. 100% of live trades reach settlement. Root cause: `_evaluate_exits` is unreachable when `signal is None` (`main.py:820` early `continue`). Not WS staleness. |
+| Q3 | Only 1 real WS outage in current cycle (10 min, peak 197s). No trades affected. P&L attributable to staleness ≈ $0. |
+| Q4 | Settlement is **strike-based**, not open-vs-close. 20% of bot-recorded directions disagree with Kalshi. P0/Test C unvalidated until strike is ingested. |
+| Q5 | Entry fills BETTER than VPS records (median −3¢). Well inside paper's 38¢ slippage tolerance. Exit slippage: cannot measure (Q2). |
+| Q6 | YES side post-restriction: 60.9% WR, +$27.49, KEEP enabled. But all 23 trades are momentum-strategy YES; LWM Fix B is unmeasured. |
+| Q7 | Above breakeven (54.3% vs 40.6%) but Kelly is 6.25× over plan. Survived 103%-of-balance drawdown by luck. |
