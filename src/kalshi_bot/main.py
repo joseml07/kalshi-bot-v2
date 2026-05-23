@@ -756,6 +756,24 @@ async def _fast_eval_loop(
                         )
                         continue
 
+                    # --- Exit evaluation (must run on EVERY tick) ---
+                    # Previously this lived after signal generation, which
+                    # meant ticks where no fresh signal was produced
+                    # (~99% of ticks, especially near T-30s) would `continue`
+                    # past the exit check. Net effect on live: zero
+                    # time_exits fired across 46 closed trades — every
+                    # position fell through to settlement. Diagnosis in
+                    # explanation.md / Q2.
+                    #
+                    # The exit only needs an open filled order + active
+                    # window + fresh orderbook — none of which depend on
+                    # whether a fresh entry signal exists for this tick.
+                    await _evaluate_exits(
+                        executor, ticker,
+                        orderbook.best_yes_bid, orderbook.best_no_bid,
+                        alerter, window,
+                    )
+
                     if settings.strategy_name == "lwm":
                         signal = evaluate_lwm(
                             window,
@@ -896,18 +914,6 @@ async def _fast_eval_loop(
                                 signal, "skip_submit", f"submit skipped: {skip_reason}"
                             )
 
-                    # --- Exit evaluation (fast path) ---
-                    # Check exits on every eval tick (~200ms) instead of
-                    # waiting for the 5s housekeeping cycle. The time_exit
-                    # fires at <30s remaining; 5s jitter was 17% timing error
-                    # on the bot's most profitable operation.
-                    best_yes_bid = orderbook.best_yes_bid
-                    best_no_bid = orderbook.best_no_bid
-                    await _evaluate_exits(
-                        executor, ticker,
-                        best_yes_bid, best_no_bid,
-                        alerter, window,
-                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception:

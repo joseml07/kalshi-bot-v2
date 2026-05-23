@@ -124,3 +124,95 @@ async def test_take_profit_does_not_trigger_low_gain() -> None:
     )
 
     executor.exit_position.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_time_exit_fires_in_final_30s() -> None:
+    """Regression for the Q2 control-flow bug.
+
+    Entered with seconds_remaining=120 (>90, eligible), now at T-15s
+    (window.seconds_remaining < 30). time_exit must fire — the live cycle
+    had 0 of these fire across 46 settled trades because _evaluate_exits
+    was only being reached via the signal-eval branch, which almost never
+    produces a signal in the last 30s of a window.
+    """
+    sig = _signal(price=Decimal("0.45"), side=Side.NO)
+    # Force the entry-time gate: order was placed with secs_remaining=120
+    sig.seconds_remaining = 120  # type: ignore[misc]
+    order = TrackedOrder(
+        signal=sig,
+        order_id="TEST-time-exit",
+        contracts=4,
+        price=Decimal("0.45"),
+    )
+    order.state = OrderState.FILLED
+
+    executor = AsyncMock()
+    executor.filled_orders = [order]
+    executor.exit_position.return_value = (True, [])
+
+    # Build a window that closes in 15 seconds (T-15s < 30s threshold).
+    window = WindowState(
+        symbol="BTC",
+        ticker=sig.ticker,
+        open_time=datetime.now(timezone.utc) - timedelta(minutes=14, seconds=45),
+        close_time=datetime.now(timezone.utc) + timedelta(seconds=15),
+        open_price=75000.0,
+        current_price=75200.0,
+    )
+
+    await _evaluate_exits(
+        executor=executor,
+        ticker=sig.ticker,
+        best_yes_bid=Decimal("0.40"),
+        best_no_bid=Decimal("0.55"),
+        alerter=None,
+        window=window,
+    )
+
+    # time_exit must fire: bot owns NO, sells at best_no_bid = 0.55.
+    executor.exit_position.assert_called_once()
+    call_kwargs = executor.exit_position.call_args
+    assert call_kwargs.kwargs.get("exit_reason") == "time_exit"
+
+
+@pytest.mark.asyncio
+async def test_time_exit_skipped_for_late_entry() -> None:
+    """Counter-test: entries placed in the final 90s should NOT time_exit.
+
+    The condition is ``order.signal.seconds_remaining > 90`` (entered with
+    enough runway). Late entries are held to settlement.
+    """
+    sig = _signal(price=Decimal("0.45"), side=Side.NO)
+    sig.seconds_remaining = 60  # type: ignore[misc]   # entered too late
+    order = TrackedOrder(
+        signal=sig,
+        order_id="TEST-late-entry",
+        contracts=4,
+        price=Decimal("0.45"),
+    )
+    order.state = OrderState.FILLED
+
+    executor = AsyncMock()
+    executor.filled_orders = [order]
+    executor.exit_position.return_value = (True, [])
+
+    window = WindowState(
+        symbol="BTC",
+        ticker=sig.ticker,
+        open_time=datetime.now(timezone.utc) - timedelta(minutes=14, seconds=45),
+        close_time=datetime.now(timezone.utc) + timedelta(seconds=15),
+        open_price=75000.0,
+        current_price=75200.0,
+    )
+
+    await _evaluate_exits(
+        executor=executor,
+        ticker=sig.ticker,
+        best_yes_bid=Decimal("0.40"),
+        best_no_bid=Decimal("0.55"),
+        alerter=None,
+        window=window,
+    )
+
+    executor.exit_position.assert_not_called()
