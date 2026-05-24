@@ -66,7 +66,13 @@ class Settings(BaseSettings):
     taker_fill_horizon_s: int = Field(default=120)
 
     # Exit management
+    # Absolute floor: exit when unrealized loss >= this (per contract)
     exit_stop_loss: float = Field(default=0.10)
+    # Drawdown fraction: exit when unrealized loss >= entry_price * this.
+    # The effective threshold is max(exit_stop_loss, entry_price * exit_stop_drawdown).
+    # Sweep (2026-05-23) showed 0.60 as optimal — lets trades breathe but caps
+    # catastrophic losses on late entries that won't get a time_exit.
+    exit_stop_drawdown: float = Field(default=0.60, ge=0.0, le=1.0)
 
     # Per-side risk gates (OFF by default; enable before flipping to live)
     # Maximum daily loss for a single side (yes or no) before that side is

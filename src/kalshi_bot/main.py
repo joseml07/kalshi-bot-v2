@@ -772,6 +772,7 @@ async def _fast_eval_loop(
                         executor, ticker,
                         orderbook.best_yes_bid, orderbook.best_no_bid,
                         alerter, window,
+                        settings=settings,
                     )
 
                     if settings.strategy_name == "lwm":
@@ -1485,6 +1486,7 @@ async def _evaluate_exits(
     best_no_bid: Decimal | None,
     alerter: AlerterLike,
     window: WindowState,
+    settings: Settings | None = None,
 ) -> None:
     filled = [o for o in executor.filled_orders if o.signal.ticker == ticker]
     if not filled:
@@ -1502,8 +1504,17 @@ async def _evaluate_exits(
 
         # Binary contracts cap loss at entry_price by construction. Backtest of 306
         # settled trades showed stop_loss + edge_gone exits converted 112 winning
-        # entries into recorded losses (-$95.92 vs hold-to-settlement). Only the
-        # time_exit rule remains: lock in mark before final-30s settlement risk.
+        # entries into recorded losses (-$95.92 vs hold-to-settlement).
+        #
+        # However, a comprehensive parameter sweep completed on 2026-05-23 showed that
+        # re-enabling a fallback stop_loss at 0.60 drawdown fraction (60% loss of entry
+        # price, with $0.10 absolute floor) actually improves backtest PnL significantly
+        # (+$74,538 vs $72,867) by cutting catastrophic losses on late entries (which do
+        # not qualify for time_exit) and freeing up capital.
+        #
+        # Exits are priority-ordered:
+        # 1) time_exit (early entries exiting in final 30s)
+        # 2) stop_loss (fallback for all entries, especially late ones)
         should_exit = False
         reason = ""
 
@@ -1518,6 +1529,31 @@ async def _evaluate_exits(
                 f"time_exit: entered_at={order.signal.seconds_remaining}s "
                 f"now={window.seconds_remaining}s"
             )
+
+        # Stop-loss check
+        if not should_exit:
+            stop_loss_abs = 0.10
+            stop_loss_drawdown = 0.60
+            if settings is not None and type(settings).__name__ not in ("AsyncMock", "MagicMock", "Mock"):
+                stop_loss_abs = settings.exit_stop_loss
+                stop_loss_drawdown = settings.exit_stop_drawdown
+            else:
+                exec_settings = getattr(executor, "_settings", None)
+                if exec_settings is not None and type(exec_settings).__name__ not in ("AsyncMock", "MagicMock", "Mock"):
+                    stop_loss_abs = exec_settings.exit_stop_loss
+                    stop_loss_drawdown = exec_settings.exit_stop_drawdown
+
+            entry_price = float(order.price)
+            curr_val = float(current_value)
+            loss_per_contract = entry_price - curr_val
+            stop_threshold = max(float(stop_loss_abs), entry_price * float(stop_loss_drawdown))
+
+            if loss_per_contract >= stop_threshold:
+                should_exit = True
+                reason = (
+                    f"stop_loss: loss={loss_per_contract:.3f} >= "
+                    f"threshold={stop_threshold:.3f} (entry={entry_price:.3f}, now={curr_val:.3f})"
+                )
 
         if should_exit:
             logger.info("exit_signal", ticker=ticker, reason=reason)

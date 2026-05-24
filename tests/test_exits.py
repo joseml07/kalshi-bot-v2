@@ -216,3 +216,149 @@ async def test_time_exit_skipped_for_late_entry() -> None:
     )
 
     executor.exit_position.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stop_loss_fires_on_drawdown() -> None:
+    # Set up order with entry price 0.50 (NO side)
+    # exit_stop_loss absolute is 0.10, drawdown threshold is 0.60 * 0.50 = 0.30
+    # Effective threshold = max(0.10, 0.30) = 0.30
+    sig = _signal(price=Decimal("0.50"), side=Side.NO)
+    sig.seconds_remaining = 60  # entered too late for time_exit
+    order = TrackedOrder(
+        signal=sig,
+        order_id="TEST-stop-loss-fire",
+        contracts=10,
+        price=Decimal("0.50"),
+    )
+    order.state = OrderState.FILLED
+
+    executor = AsyncMock()
+    executor.filled_orders = [order]
+    executor.exit_position.return_value = (True, [])
+
+    # Market NO bid is 0.19 -> loss per contract = 0.50 - 0.19 = 0.31 >= 0.30 (threshold)
+    # Stop loss should fire!
+    window = _window()
+    await _evaluate_exits(
+        executor=executor,
+        ticker=sig.ticker,
+        best_yes_bid=Decimal("0.80"),
+        best_no_bid=Decimal("0.19"),
+        alerter=None,
+        window=window,
+    )
+
+    executor.exit_position.assert_called_once()
+    call_kwargs = executor.exit_position.call_args
+    assert "stop_loss" in call_kwargs.kwargs.get("exit_reason", "")
+
+
+@pytest.mark.asyncio
+async def test_stop_loss_skipped_when_under_drawdown() -> None:
+    # Set up order with entry price 0.50 (NO side)
+    # Effective threshold = max(0.10, 0.30) = 0.30
+    sig = _signal(price=Decimal("0.50"), side=Side.NO)
+    sig.seconds_remaining = 60
+    order = TrackedOrder(
+        signal=sig,
+        order_id="TEST-stop-loss-skip",
+        contracts=10,
+        price=Decimal("0.50"),
+    )
+    order.state = OrderState.FILLED
+
+    executor = AsyncMock()
+    executor.filled_orders = [order]
+    executor.exit_position.return_value = (True, [])
+
+    # Market NO bid is 0.21 -> loss per contract = 0.50 - 0.21 = 0.29 < 0.30 (threshold)
+    # Stop loss should NOT fire!
+    window = _window()
+    await _evaluate_exits(
+        executor=executor,
+        ticker=sig.ticker,
+        best_yes_bid=Decimal("0.78"),
+        best_no_bid=Decimal("0.21"),
+        alerter=None,
+        window=window,
+    )
+
+    executor.exit_position.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stop_loss_fires_for_yes_side() -> None:
+    # Set up order with entry price 0.60 (YES side)
+    # drawdown threshold is 0.60 * 0.60 = 0.36
+    sig = _signal(price=Decimal("0.60"), side=Side.YES)
+    sig.seconds_remaining = 60
+    order = TrackedOrder(
+        signal=sig,
+        order_id="TEST-stop-loss-yes",
+        contracts=10,
+        price=Decimal("0.60"),
+    )
+    order.state = OrderState.FILLED
+
+    executor = AsyncMock()
+    executor.filled_orders = [order]
+    executor.exit_position.return_value = (True, [])
+
+    # Market YES bid is 0.23 -> loss = 0.60 - 0.23 = 0.37 >= 0.36
+    # Stop loss should fire!
+    window = _window()
+    await _evaluate_exits(
+        executor=executor,
+        ticker=sig.ticker,
+        best_yes_bid=Decimal("0.23"),
+        best_no_bid=Decimal("0.76"),
+        alerter=None,
+        window=window,
+    )
+
+    executor.exit_position.assert_called_once()
+    call_kwargs = executor.exit_position.call_args
+    assert "stop_loss" in call_kwargs.kwargs.get("exit_reason", "")
+
+
+@pytest.mark.asyncio
+async def test_time_exit_priority_over_stop_loss() -> None:
+    # Set up order eligible for both time_exit and stop_loss:
+    # entered at seconds_remaining=120, now at seconds_remaining=15
+    # Entry price 0.50, current bid 0.15 (loss 0.35 >= 0.30 threshold)
+    sig = _signal(price=Decimal("0.50"), side=Side.NO)
+    sig.seconds_remaining = 120
+    order = TrackedOrder(
+        signal=sig,
+        order_id="TEST-priority",
+        contracts=10,
+        price=Decimal("0.50"),
+    )
+    order.state = OrderState.FILLED
+
+    executor = AsyncMock()
+    executor.filled_orders = [order]
+    executor.exit_position.return_value = (True, [])
+
+    window = WindowState(
+        symbol="BTC",
+        ticker=sig.ticker,
+        open_time=datetime.now(timezone.utc) - timedelta(minutes=14, seconds=45),
+        close_time=datetime.now(timezone.utc) + timedelta(seconds=15),
+        open_price=75000.0,
+        current_price=75200.0,
+    )
+
+    await _evaluate_exits(
+        executor=executor,
+        ticker=sig.ticker,
+        best_yes_bid=Decimal("0.84"),
+        best_no_bid=Decimal("0.15"),
+        alerter=None,
+        window=window,
+    )
+
+    executor.exit_position.assert_called_once()
+    call_kwargs = executor.exit_position.call_args
+    assert call_kwargs.kwargs.get("exit_reason") == "time_exit"
