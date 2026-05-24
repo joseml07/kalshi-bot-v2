@@ -1506,15 +1506,11 @@ async def _evaluate_exits(
         # settled trades showed stop_loss + edge_gone exits converted 112 winning
         # entries into recorded losses (-$95.92 vs hold-to-settlement).
         #
-        # However, a comprehensive parameter sweep completed on 2026-05-23 showed that
-        # re-enabling a fallback stop_loss at 0.60 drawdown fraction (60% loss of entry
-        # price, with $0.10 absolute floor) actually improves backtest PnL significantly
-        # (+$74,538 vs $72,867) by cutting catastrophic losses on late entries (which do
-        # not qualify for time_exit) and freeing up capital.
-        #
-        # Exits are priority-ordered:
-        # 1) time_exit (early entries exiting in final 30s)
-        # 2) stop_loss (fallback for all entries, especially late ones)
+        # The 60% stop_loss Gemini added on 2026-05-24 was reverted on the same day:
+        # the +2.3% backtest improvement was within noise, and live afternoon-slide
+        # losses on 2026-05-23 (-$26 in 7h) were full settlement losses that stop_loss
+        # could not have prevented.  Only time_exit survives until new evidence shows
+        # intra-window drawdowns predict settlement outcomes (per memory note).
         should_exit = False
         reason = ""
 
@@ -1529,31 +1525,6 @@ async def _evaluate_exits(
                 f"time_exit: entered_at={order.signal.seconds_remaining}s "
                 f"now={window.seconds_remaining}s"
             )
-
-        # Stop-loss check
-        if not should_exit:
-            stop_loss_abs = 0.10
-            stop_loss_drawdown = 0.60
-            if settings is not None and type(settings).__name__ not in ("AsyncMock", "MagicMock", "Mock"):
-                stop_loss_abs = settings.exit_stop_loss
-                stop_loss_drawdown = settings.exit_stop_drawdown
-            else:
-                exec_settings = getattr(executor, "_settings", None)
-                if exec_settings is not None and type(exec_settings).__name__ not in ("AsyncMock", "MagicMock", "Mock"):
-                    stop_loss_abs = exec_settings.exit_stop_loss
-                    stop_loss_drawdown = exec_settings.exit_stop_drawdown
-
-            entry_price = float(order.price)
-            curr_val = float(current_value)
-            loss_per_contract = entry_price - curr_val
-            stop_threshold = max(float(stop_loss_abs), entry_price * float(stop_loss_drawdown))
-
-            if loss_per_contract >= stop_threshold:
-                should_exit = True
-                reason = (
-                    f"stop_loss: loss={loss_per_contract:.3f} >= "
-                    f"threshold={stop_threshold:.3f} (entry={entry_price:.3f}, now={curr_val:.3f})"
-                )
 
         if should_exit:
             logger.info("exit_signal", ticker=ticker, reason=reason)

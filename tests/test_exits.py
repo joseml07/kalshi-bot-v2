@@ -219,10 +219,11 @@ async def test_time_exit_skipped_for_late_entry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stop_loss_fires_on_drawdown() -> None:
-    # Set up order with entry price 0.50 (NO side)
-    # exit_stop_loss absolute is 0.10, drawdown threshold is 0.60 * 0.50 = 0.30
-    # Effective threshold = max(0.10, 0.30) = 0.30
+async def test_stop_loss_disabled_holds_through_drawdown() -> None:
+    # Stop_loss was reverted 2026-05-24 — original 35-day backtest showed it
+    # destroys edge, and the live afternoon-slide losses it was meant to
+    # prevent were full settlement losses that stop_loss couldn't catch.
+    # A losing position past the would-be drawdown threshold must now HOLD.
     sig = _signal(price=Decimal("0.50"), side=Side.NO)
     sig.seconds_remaining = 60  # entered too late for time_exit
     order = TrackedOrder(
@@ -237,8 +238,8 @@ async def test_stop_loss_fires_on_drawdown() -> None:
     executor.filled_orders = [order]
     executor.exit_position.return_value = (True, [])
 
-    # Market NO bid is 0.19 -> loss per contract = 0.50 - 0.19 = 0.31 >= 0.30 (threshold)
-    # Stop loss should fire!
+    # Market NO bid is 0.19 — old stop_loss would have fired (loss 0.31 > 0.30).
+    # Now we hold to settlement.
     window = _window()
     await _evaluate_exits(
         executor=executor,
@@ -249,9 +250,7 @@ async def test_stop_loss_fires_on_drawdown() -> None:
         window=window,
     )
 
-    executor.exit_position.assert_called_once()
-    call_kwargs = executor.exit_position.call_args
-    assert "stop_loss" in call_kwargs.kwargs.get("exit_reason", "")
+    executor.exit_position.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -288,9 +287,8 @@ async def test_stop_loss_skipped_when_under_drawdown() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stop_loss_fires_for_yes_side() -> None:
-    # Set up order with entry price 0.60 (YES side)
-    # drawdown threshold is 0.60 * 0.60 = 0.36
+async def test_stop_loss_disabled_holds_through_drawdown_yes_side() -> None:
+    # YES-side mirror of the NO-side test above.  Stop_loss is disabled.
     sig = _signal(price=Decimal("0.60"), side=Side.YES)
     sig.seconds_remaining = 60
     order = TrackedOrder(
@@ -305,8 +303,8 @@ async def test_stop_loss_fires_for_yes_side() -> None:
     executor.filled_orders = [order]
     executor.exit_position.return_value = (True, [])
 
-    # Market YES bid is 0.23 -> loss = 0.60 - 0.23 = 0.37 >= 0.36
-    # Stop loss should fire!
+    # Market YES bid is 0.23 — old stop_loss would have fired (loss 0.37 > 0.36).
+    # Now we hold to settlement.
     window = _window()
     await _evaluate_exits(
         executor=executor,
@@ -317,9 +315,7 @@ async def test_stop_loss_fires_for_yes_side() -> None:
         window=window,
     )
 
-    executor.exit_position.assert_called_once()
-    call_kwargs = executor.exit_position.call_args
-    assert "stop_loss" in call_kwargs.kwargs.get("exit_reason", "")
+    executor.exit_position.assert_not_called()
 
 
 @pytest.mark.asyncio
