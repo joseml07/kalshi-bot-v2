@@ -791,12 +791,18 @@ async def _fast_eval_loop(
                             maker_first=settings.maker_first,
                         )
                     else:
+                        recent = tracker.get_recent_changes(symbol)
+                        live_k = (
+                            estimate_k_from_vol(recent)
+                            if len(recent) >= 5
+                            else settings.logistic_k
+                        )
                         signal = evaluate_momentum(
                             window,
                             ticker,
                             orderbook,
                             edge_threshold=settings.edge_threshold,
-                            k=settings.logistic_k,
+                            k=live_k,
                             min_time=settings.momentum_min_time,
                             max_time=settings.momentum_max_time,
                             min_price=settings.min_trade_price,
