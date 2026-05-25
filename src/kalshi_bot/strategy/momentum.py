@@ -47,6 +47,7 @@ def evaluate_momentum(
     max_price: float | None = None,
     maker_first: bool = True,
     contracts: int = 1,
+    min_obi: float = 0.0,
 ) -> Signal | None:
     """Evaluate momentum + OBI gates and return a trade signal if valid.
 
@@ -85,6 +86,9 @@ def evaluate_momentum(
             imb_sign,
             seconds_remaining,
         )
+        return None
+
+    if abs(imbalance) < min_obi:
         return None
 
     # Minimum depth gate — thin books have unreliable pricing

@@ -42,6 +42,7 @@ def evaluate_mean_reversion(
     min_price: float = 0.25,
     max_price: float = 0.80,
     contracts: int = 1,
+    min_obi: float = 0.0,
 ) -> Signal | None:
     """Evaluate mean reversion signal: trade AGAINST momentum when OBI disagrees."""
     seconds_remaining = window.seconds_remaining
@@ -58,6 +59,9 @@ def evaluate_mean_reversion(
 
     # Only fire when signs DISAGREE (opposite of momentum strategy)
     if mom_sign == 0 or imb_sign == 0 or mom_sign == imb_sign:
+        return None
+
+    if abs(imbalance) < min_obi:
         return None
 
     # Minimum depth gate
