@@ -105,6 +105,17 @@ def _bump_counter(counters: dict[str, int], key: str) -> None:
     counters[key] = counters.get(key, 0) + 1
 
 
+def _effective_edge_threshold(settings: Any) -> float:
+    """Scale edge threshold by time of day — higher bar during off-peak hours."""
+    hour = datetime.now(timezone.utc).hour
+    start = getattr(settings, "peak_hours_start", 13)
+    end = getattr(settings, "peak_hours_end", 20)
+    if start <= hour < end:
+        return settings.edge_threshold
+    mult = getattr(settings, "offpeak_edge_multiplier", 2.0)
+    return settings.edge_threshold * mult
+
+
 def _sign(value: float) -> int:
     if value > 0:
         return 1
@@ -780,7 +791,7 @@ async def _fast_eval_loop(
                             window,
                             ticker,
                             orderbook,
-                            edge_threshold=settings.edge_threshold,
+                            edge_threshold=_effective_edge_threshold(settings),
                             decision_min_s=settings.lwm_decision_min_s,
                             decision_max_s=settings.lwm_decision_max_s,
                             yes_decision_max_s=settings.lwm_yes_decision_max_s,
@@ -798,7 +809,7 @@ async def _fast_eval_loop(
                             window,
                             ticker,
                             orderbook,
-                            edge_threshold=settings.edge_threshold,
+                            edge_threshold=_effective_edge_threshold(settings),
                             k=settings.logistic_k,
                             min_time=settings.momentum_min_time,
                             max_time=settings.momentum_max_time,
@@ -839,7 +850,7 @@ async def _fast_eval_loop(
                             else None,
                             min_trade_price=settings.min_trade_price,
                             max_trade_price=settings.max_trade_price,
-                            edge_threshold=settings.edge_threshold,
+                            edge_threshold=_effective_edge_threshold(settings),
                         )
                         continue
 
@@ -1270,7 +1281,7 @@ async def _slow_housekeeping_loop(
                         window,
                         ticker,
                         orderbook,
-                        edge_threshold=settings.edge_threshold,
+                        edge_threshold=_effective_edge_threshold(settings),
                         decision_min_s=settings.lwm_decision_min_s,
                         decision_max_s=settings.lwm_decision_max_s,
                         yes_decision_max_s=settings.lwm_yes_decision_max_s,
@@ -1288,7 +1299,7 @@ async def _slow_housekeeping_loop(
                         window,
                         ticker,
                         orderbook,
-                        edge_threshold=settings.edge_threshold,
+                        edge_threshold=_effective_edge_threshold(settings),
                         k=settings.logistic_k,
                         min_time=settings.momentum_min_time,
                         max_time=settings.momentum_max_time,

@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     # Side gating — disable YES side execution (still logs what-if signals)
     yes_side_disabled: bool = Field(default=False)
 
+    # Time-of-day edge scaling: during off-peak hours, require higher edge
+    # to filter out weak signals that work in US morning but not overnight.
+    # Golden hours = 13:00-20:00 UTC (US 9am-4pm ET).
+    peak_hours_start: int = Field(default=13, ge=0, le=23)
+    peak_hours_end: int = Field(default=20, ge=0, le=23)
+    offpeak_edge_multiplier: float = Field(default=2.0, ge=1.0)
+
     # Maker-first execution
     maker_first: bool = Field(default=True)
     maker_fill_horizon_s: int = Field(default=90)
