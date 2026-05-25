@@ -66,9 +66,11 @@ from kalshi_bot.alerts.telegram import (
 )
 from kalshi_bot.alerts.control import SettingError, mutate_setting
 from kalshi_bot.analysis.window_analyzer import analyze_window
+from kalshi_bot.client.bitstamp import BitstampFeed
 from kalshi_bot.client.coinbase import CoinbaseFeed
 from kalshi_bot.client.kalshi import KalshiClient
 from kalshi_bot.client.kalshi_ws import KalshiOrderbookFeed
+from kalshi_bot.client.kraken import KrakenFeed
 from kalshi_bot.client.openrouter import OpenRouterClient
 from kalshi_bot.config import Settings
 from kalshi_bot.control_channel import drain as drain_control_queue
@@ -527,6 +529,8 @@ async def run_bot(settings: Settings) -> None:
     price_queue: asyncio.Queue[PriceTick] = asyncio.Queue(maxsize=500)
     eval_trigger = asyncio.Event()
     feed = CoinbaseFeed(price_queue, eval_trigger=eval_trigger)
+    kraken_feed = KrakenFeed()
+    bitstamp_feed = BitstampFeed()
     ws_feed = KalshiOrderbookFeed(settings, eval_trigger=eval_trigger)
     executor.attach_orderbook_source(ws_feed.get_orderbook)
 
@@ -571,6 +575,8 @@ async def run_bot(settings: Settings) -> None:
         await alerter.bot_started("paper" if dry_run else "live")
 
     feed_task = asyncio.create_task(feed.start())
+    kraken_task = asyncio.create_task(kraken_feed.start())
+    bitstamp_task = asyncio.create_task(bitstamp_feed.start())
     ws_feed_task = asyncio.create_task(ws_feed.start())
 
     alerter_tasks: list[asyncio.Task[None]] = []
@@ -623,6 +629,8 @@ async def run_bot(settings: Settings) -> None:
                 shutdown_event,
                 recorder,
                 eval_trigger=eval_trigger,
+                kraken=kraken_feed,
+                bitstamp=bitstamp_feed,
             )
         )
 
@@ -656,6 +664,8 @@ async def _drain_prices(
     shutdown: asyncio.Event,
     recorder: DataRecorder | None = None,
     eval_trigger: asyncio.Event | None = None,
+    kraken: KrakenFeed | None = None,
+    bitstamp: BitstampFeed | None = None,
 ) -> None:
     while not shutdown.is_set():
         try:
@@ -663,6 +673,22 @@ async def _drain_prices(
                 tick = await asyncio.wait_for(queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
+            # Composite price: average with fresh Kraken/Bitstamp if available
+            prices = [tick.price]
+            if kraken is not None:
+                kr = kraken.get_price(tick.symbol)
+                if kr is not None and kr[1] < 5.0:
+                    prices.append(kr[0])
+            if bitstamp is not None:
+                bs = bitstamp.get_price(tick.symbol)
+                if bs is not None and bs[1] < 5.0:
+                    prices.append(bs[0])
+            if len(prices) > 1:
+                tick = PriceTick(
+                    symbol=tick.symbol,
+                    price=sum(prices) / len(prices),
+                    timestamp=tick.timestamp,
+                )
             tracker.update_price(tick)
             if eval_trigger is not None:
                 eval_trigger.set()
