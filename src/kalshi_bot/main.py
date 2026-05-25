@@ -125,7 +125,7 @@ def _k_from_window_prices(
         return fallback_k
     sigma_15m = sigma * math.sqrt(900.0)
     k = 1.0 / sigma_15m
-    return max(50.0, min(k, 400.0))
+    return max(50.0, min(k, 600.0))
 
 
 def _sign(value: float) -> int:

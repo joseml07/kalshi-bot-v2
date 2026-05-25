@@ -43,4 +43,4 @@ def estimate_k_from_vol(recent_changes: list[float]) -> float:
     if sigma < 0.0001:
         return 150.0
     k = 1.0 / sigma
-    return max(50.0, min(k, 400.0))
+    return max(50.0, min(k, 600.0))
