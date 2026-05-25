@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import signal as unix_signal
+import statistics
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -103,6 +105,27 @@ EVAL_STALE_THRESHOLD_S = 180.0
 def _bump_counter(counters: dict[str, int], key: str) -> None:
     """Increment named in-memory signal counter."""
     counters[key] = counters.get(key, 0) + 1
+
+
+def _k_from_window_prices(
+    prices_60s: Any, fallback_k: float
+) -> float:
+    """Compute k from realized vol of intra-window price ticks."""
+    if len(prices_60s) < 10:
+        return fallback_k
+    prices = [p for _, p in prices_60s]
+    log_returns = []
+    for i in range(1, len(prices)):
+        if prices[i - 1] > 0:
+            log_returns.append(math.log(prices[i] / prices[i - 1]))
+    if len(log_returns) < 5:
+        return fallback_k
+    sigma = statistics.stdev(log_returns)
+    if sigma < 1e-8:
+        return fallback_k
+    sigma_15m = sigma * math.sqrt(900.0)
+    k = 1.0 / sigma_15m
+    return max(50.0, min(k, 400.0))
 
 
 def _sign(value: float) -> int:
@@ -791,11 +814,8 @@ async def _fast_eval_loop(
                             maker_first=settings.maker_first,
                         )
                     else:
-                        recent = tracker.get_recent_changes(symbol)
-                        live_k = (
-                            estimate_k_from_vol(recent)
-                            if len(recent) >= 5
-                            else settings.logistic_k
+                        live_k = _k_from_window_prices(
+                            window.prices_60s, settings.logistic_k
                         )
                         signal = evaluate_momentum(
                             window,
@@ -1254,11 +1274,8 @@ async def _slow_housekeeping_loop(
                             active_orders[0].fee_per_contract
                         )
 
-                recent = tracker.get_recent_changes(symbol)
-                dynamic_k = (
-                    estimate_k_from_vol(recent)
-                    if len(recent) >= 5
-                    else settings.logistic_k
+                dynamic_k = _k_from_window_prices(
+                    window.prices_60s, settings.logistic_k
                 )
                 snap_prob_live = estimate_up_probability(
                     window.price_change_pct,
