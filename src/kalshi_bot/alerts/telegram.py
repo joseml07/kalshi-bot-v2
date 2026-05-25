@@ -353,15 +353,18 @@ def make_status_command(risk_manager: Any, executor: Any, client: Any, settings:
                 balance = "?"
         mode = settings.trading_mode
         env = settings.kalshi_env
-        kill = "YES" if Path("KILL_SWITCH").exists() else "no"
+        kill = "ON" if Path("KILL_SWITCH").exists() else "off"
+        yes_gate = "DISABLED" if settings.yes_side_disabled else "on"
         return (
             f"<b>Bot Status</b>\n"
             f"Mode: {_escape_html(mode)} | Env: {_escape_html(env)}\n"
             f"Balance: ${balance}\n"
             f"Daily P&L: ${risk_manager.daily_pnl}\n"
-            f"Open positions: {risk_manager.open_position_count}\n"
-            f"Pending orders: {len(executor.pending_orders)}\n"
-            f"Kill switch: {kill}"
+            f"Open: {risk_manager.open_position_count} | Pending: {len(executor.pending_orders)}\n"
+            f"Kill switch: {kill}\n"
+            f"YES side: {yes_gate}\n"
+            f"Symbols: {_escape_html(settings.symbols)}\n"
+            f"Exits: time_exit only | Kelly: {settings.kelly_fraction}"
         )
 
     return handler
@@ -492,25 +495,69 @@ def make_stats_command(db_path: str = "trades.db") -> CommandHandler:
         total_fees = row["total_fees"] or 0.0
         sign = "+" if total_pnl >= 0 else ""
 
-        route_bits: list[str] = []
-        for rr in route_rows:
-            cnt = rr["cnt"] or 0
-            rwins = rr["wins"] or 0
-            rwr = int((rwins / cnt) * 100) if cnt else 0
-            label = _escape_html(str(rr["route"] or "unknown").replace("_", " ").title())
-            route_bits.append(f"{label}: {cnt} ({rwr}% WR)")
+        side_rows = conn.execute(
+            f"""SELECT side, COUNT(*) as cnt,
+                       SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+                       ROUND(SUM(CAST(pnl AS REAL)), 2) as pnl
+                FROM trades {where} GROUP BY side""",  # noqa: S608
+            params,
+        ).fetchall()
+        exit_rows = conn.execute(
+            f"""SELECT exit_reason, COUNT(*) as cnt,
+                       SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+                       ROUND(SUM(CAST(pnl AS REAL)), 2) as pnl
+                FROM trades {where} AND exit_reason IS NOT NULL GROUP BY exit_reason""",  # noqa: S608
+            params,
+        ).fetchall()
+        symbol_rows = conn.execute(
+            f"""SELECT symbol, COUNT(*) as cnt,
+                       SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+                       ROUND(SUM(CAST(pnl AS REAL)), 2) as pnl
+                FROM trades {where} GROUP BY symbol""",  # noqa: S608
+            params,
+        ).fetchall()
+        conn.close()
+
+        total = row["total"] or 0
+        wins = row["wins"] or 0
+        losses = row["losses"] or 0
+        win_rate = (wins / total * 100) if total else 0.0
+        avg_pnl = row["avg_pnl"] or 0.0
+        total_pnl = row["total_pnl"] or 0.0
+        total_fees = row["total_fees"] or 0.0
+        sign = "+" if total_pnl >= 0 else ""
 
         label = "Session Stats" if session_start else "All-Time Stats"
         lines = [
             f"<b>{label}</b>",
             f"Trades: {total} ({wins}W / {losses}L)",
             f"Win rate: {win_rate:.1f}%",
-            f"Avg P&amp;L: ${avg_pnl:.2f}",
             f"Net P&amp;L: {sign}${total_pnl:.2f}",
-            f"Total fees: ${total_fees:.2f}",
+            f"Avg P&amp;L: ${avg_pnl:.2f} | Fees: ${total_fees:.2f}",
         ]
-        if route_bits:
-            lines.append("Routes: " + " | ".join(route_bits))
+        if side_rows:
+            side_bits = []
+            for sr in side_rows:
+                s = _escape_html(str(sr["side"] or "?").upper())
+                sc, sw, sp = sr["cnt"], sr["wins"] or 0, sr["pnl"] or 0
+                swr = int(sw / sc * 100) if sc else 0
+                side_bits.append(f"{s}: {sc}t {swr}% ${sp:+.2f}")
+            lines.append("By side: " + " | ".join(side_bits))
+        if symbol_rows:
+            sym_bits = []
+            for sr in symbol_rows:
+                s = _escape_html(str(sr["symbol"] or "?"))
+                sc, sw, sp = sr["cnt"], sr["wins"] or 0, sr["pnl"] or 0
+                swr = int(sw / sc * 100) if sc else 0
+                sym_bits.append(f"{s}: {sc}t {swr}% ${sp:+.2f}")
+            lines.append("By symbol: " + " | ".join(sym_bits))
+        if exit_rows:
+            exit_bits = []
+            for er in exit_rows:
+                e = _escape_html(str(er["exit_reason"] or "?"))
+                ec, ew, ep = er["cnt"], er["wins"] or 0, er["pnl"] or 0
+                exit_bits.append(f"{e}: {ec}t ${ep:+.2f}")
+            lines.append("By exit: " + " | ".join(exit_bits))
         if best:
             lines.append(f"Best: <code>{_escape_html(best['ticker'])}</code> +${best['pnl']}")
         if worst:
@@ -599,20 +646,26 @@ def make_config_command(settings: Any) -> CommandHandler:
             if settings.trading_mode == "paper"
             else ""
         )
+        bankroll_line = (
+            f"\nBankroll override: ${settings.bankroll_override:.2f}"
+            if settings.bankroll_override > 0
+            else ""
+        )
         return (
             "<b>Current Config</b>\n"
             f"Mode: {_escape_html(settings.trading_mode)} | Env: {_escape_html(settings.kalshi_env)}\n"
             f"Symbols: {_escape_html(settings.symbols)}\n"
+            f"YES side: {'DISABLED' if settings.yes_side_disabled else 'enabled'}\n"
             f"Edge threshold: {settings.edge_threshold:.2f}\n"
             f"Time window: {settings.momentum_min_time}-{settings.momentum_max_time}s\n"
             f"Price range: ${settings.min_trade_price:.2f}-${settings.max_trade_price:.2f}\n"
-            f"Maker first: {'ON' if settings.maker_first else 'off'}\n"
-            f"Maker fill horizon: {settings.maker_fill_horizon_s}s\n"
-            f"Exit stop loss: ${settings.exit_stop_loss:.2f}/contract\n"
-            f"Logistic k: {settings.logistic_k}\n"
+            f"Dynamic k: ON (fallback={settings.logistic_k}, cap=600)\n"
+            f"Kelly fraction: {settings.kelly_fraction}\n"
             f"Daily loss limit: ${settings.daily_loss_limit:.2f}\n"
-            f"Max per trade: ${settings.max_per_trade:.2f}"
-            f"{paper_line}"
+            f"Max per trade: ${settings.max_per_trade:.2f}\n"
+            f"Exits: time_exit only\n"
+            f"Feeds: Coinbase + Kraken + Bitstamp (composite)"
+            f"{paper_line}{bankroll_line}"
         )
 
     return handler
@@ -743,6 +796,8 @@ def make_reset_command(risk: Any) -> ArgCommandHandler:
 
 def make_window_command(tracker: Any) -> CommandHandler:
     async def handler() -> str:
+        from kalshi_bot.strategy.probability import estimate_k_from_vol
+
         symbols = ["BTC", "ETH", "SOL"]
         lines = ["<b>Active Windows</b>\n"]
         found = False
@@ -755,11 +810,25 @@ def make_window_command(tracker: Any) -> CommandHandler:
             secs = win.seconds_remaining
             mins = secs // 60
             remaining = f"{mins}m{secs % 60:02d}s"
+            # Compute dynamic k from window prices
+            k_str = "—"
+            if hasattr(win, "prices_60s") and len(win.prices_60s) >= 10:
+                import math
+                import statistics as _stats
+
+                prices = [p for _, p in win.prices_60s]
+                lr = [math.log(prices[i] / prices[i - 1]) for i in range(1, len(prices)) if prices[i - 1] > 0]
+                if len(lr) >= 5:
+                    s = _stats.stdev(lr)
+                    if s > 1e-8:
+                        k_val = max(50.0, min(1.0 / (s * math.sqrt(900.0)), 600.0))
+                        k_str = f"{k_val:.0f}"
+            mom = win.momentum_60s
+            mom_str = f"{mom:+.5f}" if mom is not None else "—"
             lines.append(
                 f"<b>{sym}</b> {win.open_time.strftime('%H:%M')}–{win.close_time.strftime('%H:%M')} UTC\n"
-                f"  Open: ${win.open_price:,.2f}\n"
-                f"  Now:  ${win.current_price:,.2f} ({pct:+.4%})\n"
-                f"  Remaining: {remaining}\n"
+                f"  ${win.open_price:,.2f} → ${win.current_price:,.2f} ({pct:+.4%})\n"
+                f"  k={k_str} | mom={mom_str} | {remaining}\n"
             )
         if not found:
             lines.append("No active windows.")

@@ -395,15 +395,18 @@ def make_status_command(
                 balance = await client.get_balance()
             except Exception:
                 balance = "?"
-        kill = "YES" if Path("KILL_SWITCH").exists() else "no"
+        kill = "ON" if Path("KILL_SWITCH").exists() else "off"
+        yes_gate = "DISABLED" if settings.yes_side_disabled else "on"
         return (
             f"**Bot Status**\n"
             f"Mode: {settings.trading_mode} | Env: {settings.kalshi_env}\n"
             f"Balance: ${balance}\n"
             f"Daily P&L: ${risk_manager.daily_pnl}\n"
-            f"Open positions: {risk_manager.open_position_count}\n"
-            f"Pending orders: {len(executor.pending_orders)}\n"
-            f"Kill switch: {kill}"
+            f"Open: {risk_manager.open_position_count} | Pending: {len(executor.pending_orders)}\n"
+            f"Kill switch: {kill}\n"
+            f"YES side: {yes_gate}\n"
+            f"Symbols: {settings.symbols}\n"
+            f"Exits: time_exit only | Kelly: {settings.kelly_fraction}"
         )
 
     return handler
@@ -593,17 +596,24 @@ def make_config_command(settings: Any) -> CommandBuilder:
             if settings.trading_mode == "paper"
             else ""
         )
+        bankroll_line = (
+            f"\nBankroll override: ${settings.bankroll_override:.2f}"
+            if settings.bankroll_override > 0
+            else ""
+        )
         return (
             "**Current Config**\n"
             f"Mode: {settings.trading_mode} | Env: {settings.kalshi_env}\n"
             f"Symbols: {settings.symbols}\n"
+            f"YES side: {'DISABLED' if settings.yes_side_disabled else 'enabled'}\n"
             f"Edge threshold: {settings.edge_threshold:.2f}\n"
             f"Time window: {settings.momentum_min_time}-{settings.momentum_max_time}s\n"
             f"Price range: ${settings.min_trade_price:.2f}-${settings.max_trade_price:.2f}\n"
-            f"Maker first: {'ON' if settings.maker_first else 'off'}\n"
-            f"Maker horizon: {settings.maker_fill_horizon_s}s\n"
-            f"Exit stop loss: ${settings.exit_stop_loss:.2f}/contract"
-            f"{paper_line}"
+            f"Dynamic k: ON (fallback={settings.logistic_k}, cap=600)\n"
+            f"Kelly fraction: {settings.kelly_fraction}\n"
+            f"Exits: time_exit only\n"
+            f"Feeds: Coinbase + Kraken + Bitstamp (composite)"
+            f"{paper_line}{bankroll_line}"
         )
 
     return handler
