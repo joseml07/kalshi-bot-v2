@@ -253,13 +253,18 @@ class TelegramAlerter:
             logger.exception("Discord send error")
 
     async def trade_placed(self, signal: Signal, contracts: int, order_id: str) -> None:
+        strat_label = signal.strategy.value
+        if strat_label == "mean_reversion":
+            strat_label = "REVERT"
+        elif strat_label == "momentum":
+            strat_label = "MOMENTUM"
         text = (
-            f"<b>Trade Placed</b>\n"
+            f"<b>Trade Placed [{strat_label}]</b>\n"
             f"Ticker: <code>{_escape_html(signal.ticker)}</code>\n"
             f"Side: {_escape_html(signal.side.value.upper())} x{contracts}\n"
             f"Price: ${signal.kalshi_price}\n"
             f"Edge: {signal.net_edge:.1%}\n"
-            f"Strategy: {_escape_html(signal.strategy.value)}\n"
+            f"Reason: {_escape_html(signal.reason)}\n"
             f"Route: {_escape_html(signal.route)}\n"
             f"Order: <code>{_escape_html(order_id)}</code>"
         )

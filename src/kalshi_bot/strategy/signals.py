@@ -26,6 +26,7 @@ class StrategyName(str, Enum):
     CONSENSUS = "consensus"
     ORDERBOOK_IMBALANCE = "orderbook_imbalance"
     MOMENTUM = "momentum"
+    MEAN_REVERSION = "mean_reversion"
     LWM = "lwm"
 
 

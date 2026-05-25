@@ -311,13 +311,19 @@ class DiscordBotAlerter:
         await self._send("", embed)
 
     async def trade_placed(self, signal: Signal, contracts: int, order_id: str) -> None:
-        embed = discord.Embed(title="Trade Placed", color=0x3FB950)
+        strat_label = signal.strategy.value
+        if strat_label == "mean_reversion":
+            strat_label = "REVERT"
+        elif strat_label == "momentum":
+            strat_label = "MOMENTUM"
+        embed = discord.Embed(title=f"Trade Placed [{strat_label}]", color=0x3FB950)
         embed.add_field(name="Ticker", value=signal.ticker, inline=True)
         embed.add_field(
             name="Side", value=f"{signal.side.value.upper()} x{contracts}", inline=True
         )
         embed.add_field(name="Price", value=f"${signal.kalshi_price}", inline=True)
         embed.add_field(name="Edge", value=f"{signal.net_edge:.1%}", inline=True)
+        embed.add_field(name="Strategy", value=signal.reason, inline=False)
         embed.add_field(name="Route", value=signal.route, inline=True)
         embed.add_field(name="Order", value=order_id, inline=False)
         await self._send("", embed)

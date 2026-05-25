@@ -103,7 +103,7 @@ def evaluate_mean_reversion(
     edge = est_prob - p
     return Signal(
         timestamp=datetime.now(timezone.utc),
-        strategy=StrategyName.MOMENTUM,  # reuse for compatibility
+        strategy=StrategyName.MEAN_REVERSION,
         ticker=ticker,
         symbol=window.symbol,
         side=side,

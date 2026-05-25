@@ -83,6 +83,7 @@ from kalshi_bot.models.market import Market
 from kalshi_bot.risk.manager import RiskManager, RiskVetoError
 from kalshi_bot.strategy.fees import maker_fee, taker_fee
 from kalshi_bot.strategy.lwm import evaluate_lwm
+from kalshi_bot.strategy.mean_reversion import evaluate_mean_reversion
 from kalshi_bot.strategy.momentum import evaluate_momentum
 from kalshi_bot.strategy.probability import estimate_k_from_vol, estimate_up_probability
 
@@ -855,6 +856,20 @@ async def _fast_eval_loop(
                             max_price=settings.max_trade_price,
                             maker_first=settings.maker_first,
                         )
+                        # Combined strategy: if momentum skips (disagreement),
+                        # try mean reversion (trade against momentum, with OBI).
+                        if signal is None:
+                            signal = evaluate_mean_reversion(
+                                window,
+                                ticker,
+                                orderbook,
+                                edge_threshold=settings.edge_threshold,
+                                k=live_k,
+                                min_time=settings.momentum_min_time,
+                                max_time=settings.momentum_max_time,
+                                min_price=settings.min_trade_price,
+                                max_price=settings.max_trade_price,
+                            )
                     last_eval_mono[symbol] = now
 
                     if signal is None:
