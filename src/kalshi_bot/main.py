@@ -724,6 +724,22 @@ async def _fast_eval_loop(
                         _record_reason(symbol, None, "skip_no_window")
                         continue
 
+                    # --- Exit evaluation (hoisted above market/orderbook gates) ---
+                    # Must run even when market has rolled or orderbook is
+                    # missing for the new ticker.  Uses window.ticker (the
+                    # order's ticker) and its own orderbook lookup so it
+                    # can't be skipped by downstream `continue` branches.
+                    exit_ticker = window.ticker
+                    exit_ob = ws_feed.get_orderbook(exit_ticker)
+                    if exit_ob is not None:
+                        exit_book, _ = exit_ob
+                        await _evaluate_exits(
+                            executor, exit_ticker,
+                            exit_book.best_yes_bid, exit_book.best_no_bid,
+                            alerter, window,
+                            settings=settings,
+                        )
+
                     market = cached.get_market(symbol)
                     if market is None:
                         _bump_counter(signal_counters, "skip_no_market")
@@ -755,25 +771,6 @@ async def _fast_eval_loop(
                             age_s=age,
                         )
                         continue
-
-                    # --- Exit evaluation (must run on EVERY tick) ---
-                    # Previously this lived after signal generation, which
-                    # meant ticks where no fresh signal was produced
-                    # (~99% of ticks, especially near T-30s) would `continue`
-                    # past the exit check. Net effect on live: zero
-                    # time_exits fired across 46 closed trades — every
-                    # position fell through to settlement. Diagnosis in
-                    # explanation.md / Q2.
-                    #
-                    # The exit only needs an open filled order + active
-                    # window + fresh orderbook — none of which depend on
-                    # whether a fresh entry signal exists for this tick.
-                    await _evaluate_exits(
-                        executor, ticker,
-                        orderbook.best_yes_bid, orderbook.best_no_bid,
-                        alerter, window,
-                        settings=settings,
-                    )
 
                     if settings.strategy_name == "lwm":
                         signal = evaluate_lwm(
