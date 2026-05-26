@@ -859,10 +859,11 @@ async def _fast_eval_loop(
                             max_price=settings.max_trade_price,
                             maker_first=settings.maker_first,
                         )
-                        # Combined strategy: if momentum skips (disagreement),
-                        # try mean reversion (trade against momentum, with OBI).
+                        # Mean reversion: shadow-trade only (paper logging).
+                        # Logs what-if signals so we can track performance
+                        # without risking real money until validated.
                         if signal is None:
-                            signal = evaluate_mean_reversion(
+                            mr_signal = evaluate_mean_reversion(
                                 window,
                                 ticker,
                                 orderbook,
@@ -873,6 +874,13 @@ async def _fast_eval_loop(
                                 min_price=settings.min_trade_price,
                                 max_price=settings.max_trade_price,
                             )
+                            if mr_signal is not None:
+                                executor.log_signal(
+                                    mr_signal, "whatif_mean_reversion",
+                                    f"edge={mr_signal.net_edge} price={mr_signal.kalshi_price} side={mr_signal.side.value}",
+                                )
+                                _bump_counter(signal_counters, "whatif_mr")
+                                _record_reason(symbol, ticker, "whatif_mean_reversion")
                     last_eval_mono[symbol] = now
 
                     if signal is None:
