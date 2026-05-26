@@ -146,3 +146,33 @@ However: edge=0.08, min_obi, and mean reversion all showed huge backtest improve
 4. Don't trade SOL without backtest data
 5. Don't let multiple AIs make contradictory changes — one AI at a time
 6. Don't deploy backtest findings without paper validation first
+
+## Update: Off-Hours Discovery (2026-05-26 evening)
+
+### The Afternoon Kill Zone (20-23 UTC / 4-7pm ET)
+
+Consistent across ALL three live sessions:
+- May 22: 5 trades, 1W, **-$15.21**
+- May 23: 7 trades, 1W, **-$10.05**
+- May 26: 10 trades, 1W, **-$9.37**
+- **Total: 22 trades, 3W-16L, -$33.09**
+
+Every other time slot is net positive (+$26.48 combined). This is structural, not variance.
+
+NO side during afternoon: 1W-11L, -$30.39. That's where the money dies.
+
+**Deployed fix:** OFFPEAK_START_UTC=20, OFFPEAK_END_UTC=23. Signals during off-hours logged as `whatif_offpeak` but not traded.
+
+### Inverted Signal Idea
+
+If the bot is 14% WR during 20-23 UTC, the OPPOSITE trade would be ~86% WR. Estimated inverted PnL: +$61 vs actual -$35. That's a $96 swing on 22 trades.
+
+**NOT deployed.** Only 22 trades across 3 sessions — could be overfitting. Shadow-log the inverted signal during off-hours and validate over 1-2 weeks before deploying.
+
+### MAX_TRADE_PRICE lowered to 0.65
+
+Three entries above $0.70 cost $9.84 in this session. Risk/reward is inverted at high prices — paying 70c+ to win 30c. One loss erases 4 wins. With MAX_TRADE_PRICE=0.65, those entries would have been +$5.56 instead of -$1.35.
+
+### Paper Shadow Trades
+
+Every live signal now also logged as `paper_shadow` in the signals table. Compare live fill prices vs signal prices to quantify the execution gap.
