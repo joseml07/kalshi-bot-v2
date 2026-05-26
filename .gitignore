@@ -14,3 +14,4 @@ vpsdata/
 newdata/
 weird_behaviour/
 control_queue.json
+.venv/
