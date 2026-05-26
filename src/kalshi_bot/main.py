@@ -537,7 +537,10 @@ async def run_bot(settings: Settings) -> None:
 
     _bankroll_sim: Decimal | None = None
     if dry_run:
-        _bankroll_sim = Decimal(str(settings.paper_balance))
+        if settings.bankroll_override > 0:
+            _bankroll_sim = Decimal(str(settings.bankroll_override))
+        else:
+            _bankroll_sim = Decimal(str(settings.paper_balance))
     elif settings.bankroll_override > 0:
         _bankroll_sim = Decimal(str(settings.bankroll_override))
     await cached.refresh_balance(
@@ -1060,7 +1063,10 @@ async def _slow_housekeeping_loop(
 
             _br_sim: Decimal | None = None
             if settings.trading_mode == "paper":
-                _br_sim = Decimal(str(settings.paper_balance))
+                if settings.bankroll_override > 0:
+                    _br_sim = Decimal(str(settings.bankroll_override))
+                else:
+                    _br_sim = Decimal(str(settings.paper_balance))
             elif settings.bankroll_override > 0:
                 _br_sim = Decimal(str(settings.bankroll_override))
             await cached.refresh_balance(

@@ -394,12 +394,23 @@ pre.code {
 
     <div class="insight-row">
       <div class="insight-card">
-        <h2>Side × Symbol matrix</h2>
-        <div class="body"><div id="insightMatrix"></div></div>
+        <h2>Strategy breakdown</h2>
+        <div class="body"><div id="insightStrategy"></div></div>
       </div>
       <div class="insight-card">
         <h2>Exit reasons</h2>
         <div class="body"><div id="insightExits"></div></div>
+      </div>
+    </div>
+
+    <div class="insight-row">
+      <div class="insight-card">
+        <h2>Side × Symbol matrix</h2>
+        <div class="body"><div id="insightMatrix"></div></div>
+      </div>
+      <div class="insight-card">
+        <h2>Strategy × Side</h2>
+        <div class="body"><div id="insightStratSide"></div></div>
       </div>
     </div>
 
@@ -990,6 +1001,46 @@ function renderInsightExits(byExit) {
   }).join('');
 }
 
+function renderInsightStrategy(byStrategy) {
+  const el = document.getElementById('insightStrategy');
+  if (!el) return;
+  if (!byStrategy || !byStrategy.length) { el.innerHTML = '<div class="footer-note">No trades.</div>'; return; }
+  const total = byStrategy.reduce((s, r) => s + Number(r.trades||0), 0) || 1;
+  el.innerHTML = byStrategy.map(g => {
+    const t = Number(g.trades||0), w = Number(g.wins||0);
+    const wr = t ? w / t : 0;
+    const pct = (t / total) * 100;
+    const label = g.strategy === 'mean_reversion' ? 'REVERT' : (g.strategy || '?').toUpperCase();
+    const cls = Number(g.total_pnl) > 0 ? 'good' : Number(g.total_pnl) < 0 ? 'bad' : '';
+    return `<div class="bar-row">
+      <span><strong>${label}</strong></span>
+      <div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>
+      <span style="text-align:right">${t}t · WR ${fmtPct(wr)} · <span class="${clsByVal(g.total_pnl)}">${fmtMoney(g.total_pnl)}</span></span>
+    </div>`;
+  }).join('');
+}
+
+function renderInsightStratSide(byStrategy, bySide) {
+  const el = document.getElementById('insightStratSide');
+  if (!el) return;
+  if (!byStrategy || !byStrategy.length) { el.innerHTML = '<div class="footer-note">No trades.</div>'; return; }
+  // Build a simple table showing strategy x side combinations
+  // We don't have the cross-tab from the API, so show strategy + side separately
+  let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
+  for (const strat of byStrategy) {
+    const label = strat.strategy === 'mean_reversion' ? 'REVERT' : (strat.strategy || '?').toUpperCase();
+    const t = Number(strat.trades||0), w = Number(strat.wins||0);
+    const wr = t ? w / t : 0;
+    html += `<div class="card-mini">
+      <div class="label">${label}</div>
+      <div class="big ${clsByVal(strat.total_pnl)}">${fmtMoney(strat.total_pnl)}</div>
+      <div class="meta">${t} trades · ${w}W · WR ${fmtPct(wr)}</div>
+    </div>`;
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
 // ---- Time-bucketed Chart.js charts ----
 //
 // All four (hour-of-day, day-of-week, drawdown, rolling WR) consume the
@@ -1370,6 +1421,8 @@ async function loadStatic(){
     renderInsightSide(breakdowns.by_side || []);
     renderInsightSymbol(breakdowns.by_symbol || []);
     renderInsightMatrix(breakdowns.by_side_symbol || []);
+    renderInsightStrategy(stats.by_strategy || []);
+    renderInsightStratSide(stats.by_strategy || [], breakdowns.by_side || []);
     renderInsightExits(breakdowns.by_exit_reason || []);
     renderHourOfDayChart(breakdowns.time_series || []);
     renderDayOfWeekChart(breakdowns.time_series || []);

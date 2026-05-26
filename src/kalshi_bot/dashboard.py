@@ -235,6 +235,25 @@ def api_stats(all: bool = False) -> dict[str, Any]:  # noqa: A002
            GROUP BY strategy""",  # noqa: S608
         params,
     )
+    stats["by_side"] = _query(
+        f"""SELECT side,
+             COUNT(*) as trades,
+             SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+             SUM(CASE WHEN CAST(pnl AS REAL) < 0 THEN 1 ELSE 0 END) as losses,
+             COALESCE(SUM(CAST(pnl AS REAL)), 0) as total_pnl
+           FROM trades {where}
+           GROUP BY side""",  # noqa: S608
+        params,
+    )
+    stats["by_exit"] = _query(
+        f"""SELECT exit_reason,
+             COUNT(*) as trades,
+             SUM(CASE WHEN CAST(pnl AS REAL) > 0 THEN 1 ELSE 0 END) as wins,
+             COALESCE(SUM(CAST(pnl AS REAL)), 0) as total_pnl
+           FROM trades {where} AND exit_reason IS NOT NULL
+           GROUP BY exit_reason""",  # noqa: S608
+        params,
+    )
     stats["session_active"] = ss is not None
 
     # Live-only stats — separate from paper so dashboard can show them independently
