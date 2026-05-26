@@ -722,6 +722,7 @@ async def _fast_eval_loop(
     """Event-driven strategy evaluation loop (no REST reads on hot path)."""
     last_eval_mono: dict[str, float] = {}
     last_risk_block: dict[str, str] = {}
+    _was_offpeak: bool | None = None
 
     def _record_reason(
         symbol: str,
@@ -747,6 +748,21 @@ async def _fast_eval_loop(
     while not shutdown.is_set():
         try:
             now_utc = datetime.now(timezone.utc)
+            # Log zone transitions
+            _is_offpeak = (
+                settings.offpeak_start_utc <= now_utc.hour <= settings.offpeak_end_utc
+            )
+            if _was_offpeak is not None and _is_offpeak != _was_offpeak:
+                if _is_offpeak:
+                    logger.warning("zone_offpeak — entering off-hours, trading paused")
+                    if alerter:
+                        asyncio.ensure_future(alerter.bot_started("OFF-HOURS: trading paused (20-23 UTC)"))
+                else:
+                    logger.info("zone_active — trading resumed")
+                    if alerter:
+                        asyncio.ensure_future(alerter.bot_started("TRADING RESUMED"))
+            _was_offpeak = _is_offpeak
+
             if (now_utc - signal_counter_window_start[0]).total_seconds() >= 3600:
                 signal_counters.clear()
                 signal_counter_window_start[0] = now_utc
@@ -953,6 +969,26 @@ async def _fast_eval_loop(
                         )
                         continue
 
+                    # Off-hours gating: log but don't trade during losing hours
+                    current_hour = datetime.now(timezone.utc).hour
+                    in_offpeak = (
+                        settings.offpeak_start_utc <= current_hour <= settings.offpeak_end_utc
+                    )
+                    if in_offpeak:
+                        executor.log_signal(
+                            signal, "whatif_offpeak",
+                            f"hour={current_hour} side={signal.side.value} edge={signal.net_edge} price={signal.kalshi_price}",
+                        )
+                        _bump_counter(signal_counters, "whatif_offpeak")
+                        _record_reason(symbol, ticker, "whatif_offpeak")
+                        continue
+
+                    # Always log a paper shadow alongside real trades for comparison
+                    executor.log_signal(
+                        signal, "paper_shadow",
+                        f"side={signal.side.value} edge={signal.net_edge} price={signal.kalshi_price}",
+                    )
+
                     submit_result = await executor.submit(signal, cached.balance)
                     if submit_result.order is not None:
                         _bump_counter(signal_counters, "trade")
@@ -1081,21 +1117,7 @@ async def _slow_housekeeping_loop(
                 client,
                 simulated_balance=_br_sim,
             )
-            # Safety switch: if live balance drops below $5, auto-switch to paper
-            if (
-                not executor._dry_run
-                and _br_sim is None
-                and cached.balance < Decimal("5.00")
-                and cached.balance > 0
-            ):
-                logger.warning(
-                    "auto_paper_switch balance=%s — too low, switching to paper",
-                    cached.balance,
-                )
-                executor._dry_run = True
-                _br_sim = Decimal(str(cached.balance))
-                if alerter:
-                    await alerter.bot_started("paper (auto-switched, balance < $5)")
+            # Safety switch removed — off-hours gating + 0.25 kelly is sufficient
             await cached.refresh_positions(client, risk)
             await cached.refresh_markets(client, tracker, settings)
 

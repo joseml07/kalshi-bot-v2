@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # Side gating — disable YES side execution (still logs what-if signals)
     yes_side_disabled: bool = Field(default=False)
 
+    # Time-of-day gating — block live trading during losing hours
+    offpeak_start_utc: int = Field(default=20, ge=0, le=23)
+    offpeak_end_utc: int = Field(default=23, ge=0, le=23)
+
     # Maker-first execution
     maker_first: bool = Field(default=True)
     maker_fill_horizon_s: int = Field(default=90)
