@@ -15,3 +15,9 @@ newdata/
 weird_behaviour/
 control_queue.json
 .venv/
+trades.db-wal
+trades.db.backup
+backtest_data.tar.gz
+*.db-wal
+*.db-shm
+*.db.backup

@@ -969,15 +969,20 @@ async def _fast_eval_loop(
                         )
                         continue
 
-                    # Off-hours gating: log but don't trade during losing hours
+                    # Off-hours gating: block trading during historically losing hours
                     current_hour = datetime.now(timezone.utc).hour
                     in_offpeak = (
                         settings.offpeak_start_utc <= current_hour <= settings.offpeak_end_utc
                     )
                     if in_offpeak:
+                        inv_side = "no" if signal.side.value == "yes" else "yes"
                         executor.log_signal(
                             signal, "whatif_offpeak",
                             f"hour={current_hour} side={signal.side.value} edge={signal.net_edge} price={signal.kalshi_price}",
+                        )
+                        executor.log_signal(
+                            signal, "whatif_inverted_offpeak",
+                            f"hour={current_hour} inverted_side={inv_side} edge={signal.net_edge} price={signal.kalshi_price}",
                         )
                         _bump_counter(signal_counters, "whatif_offpeak")
                         _record_reason(symbol, ticker, "whatif_offpeak")
