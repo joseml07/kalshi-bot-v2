@@ -1073,6 +1073,21 @@ async def _slow_housekeeping_loop(
                 client,
                 simulated_balance=_br_sim,
             )
+            # Safety switch: if live balance drops below $5, auto-switch to paper
+            if (
+                not executor._dry_run
+                and _br_sim is None
+                and cached.balance < Decimal("5.00")
+                and cached.balance > 0
+            ):
+                logger.warning(
+                    "auto_paper_switch balance=%s — too low, switching to paper",
+                    cached.balance,
+                )
+                executor._dry_run = True
+                _br_sim = Decimal(str(cached.balance))
+                if alerter:
+                    await alerter.bot_started("paper (auto-switched, balance < $5)")
             await cached.refresh_positions(client, risk)
             await cached.refresh_markets(client, tracker, settings)
 
