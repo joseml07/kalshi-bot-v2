@@ -87,6 +87,56 @@ async def test_time_exit_fires_in_final_30s() -> None:
 
 
 @pytest.mark.asyncio
+async def test_time_exit_fires_at_45s_remaining() -> None:
+    """Regression (T-60 fix): time_exit must fire when 45s remain.
+
+    Kalshi empties the orderbook ~37s before our predicted close time.
+    The old T-30 threshold missed this window; T-60 catches it while the
+    book still has prices to sell into.
+    """
+    sig = _signal(seconds_remaining=120)
+    close_time = datetime.now(timezone.utc) + timedelta(seconds=45)
+    sig.timestamp = close_time - timedelta(seconds=sig.seconds_remaining)
+
+    order = TrackedOrder(signal=sig, order_id="TEST-t60-fix", contracts=4, price=Decimal("0.45"))
+    order.state = OrderState.FILLED
+
+    executor = AsyncMock()
+    executor.filled_orders = [order]
+    executor.exit_position.return_value = (True, [])
+
+    book = _orderbook(ticker=sig.ticker, yes_bid=Decimal("0.40"), no_bid=Decimal("0.55"))
+    ws_feed = _ws_feed(sig.ticker, book)
+
+    await _evaluate_exits(executor=executor, ws_feed=ws_feed, alerter=None, symbol="BTC")
+
+    executor.exit_position.assert_called_once()
+    assert executor.exit_position.call_args.kwargs.get("exit_reason") == "time_exit"
+
+
+@pytest.mark.asyncio
+async def test_time_exit_skipped_when_70s_remain() -> None:
+    """T-60 boundary: must NOT fire when 70s remain (just above threshold)."""
+    sig = _signal(seconds_remaining=120)
+    close_time = datetime.now(timezone.utc) + timedelta(seconds=70)
+    sig.timestamp = close_time - timedelta(seconds=sig.seconds_remaining)
+
+    order = TrackedOrder(signal=sig, order_id="TEST-t60-no-fire", contracts=4, price=Decimal("0.45"))
+    order.state = OrderState.FILLED
+
+    executor = AsyncMock()
+    executor.filled_orders = [order]
+    executor.exit_position.return_value = (True, [])
+
+    book = _orderbook(ticker=sig.ticker, yes_bid=Decimal("0.40"), no_bid=Decimal("0.55"))
+    ws_feed = _ws_feed(sig.ticker, book)
+
+    await _evaluate_exits(executor=executor, ws_feed=ws_feed, alerter=None, symbol="BTC")
+
+    executor.exit_position.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_time_exit_fires_after_window_rolled() -> None:
     """Key regression: time_exit must fire even when ws_feed is from old ticker.
 
@@ -279,3 +329,132 @@ async def test_time_exit_fires_over_stop_loss_check() -> None:
 
     executor.exit_position.assert_called_once()
     assert executor.exit_position.call_args.kwargs.get("exit_reason") == "time_exit"
+
+
+# ---------------------------------------------------------------------------
+# Shadow-log deduplication tests
+# ---------------------------------------------------------------------------
+
+def _mock_window(ticker: str, momentum_60s: float | None = None, price_change_pct: float = 0.0) -> MagicMock:
+    """Build a minimal window mock for shadow-log tests."""
+    w = MagicMock()
+    w.ticker = ticker
+    w.momentum_60s = momentum_60s
+    w.price_change_pct = price_change_pct
+    w.prices_60s = []  # len() returns 0 → _k_from_window_prices returns fallback_k
+    return w
+
+
+def _mock_settings(logistic_k: float = 200.0) -> MagicMock:
+    s = MagicMock()
+    s.logistic_k = logistic_k
+    return s
+
+
+@pytest.mark.asyncio
+async def test_momentum_exit_shadow_deduplicated() -> None:
+    """whatif_momentum_exit must fire at most once per order across multiple ticks.
+
+    The exit loop runs every ~1s. Without deduplication, once momentum reverses
+    it would log hundreds of rows per order before settlement.
+    """
+    sig = _signal(side=Side.NO, price=Decimal("0.35"), seconds_remaining=120)
+    close_time = datetime.now(timezone.utc) + timedelta(minutes=5)
+    sig.timestamp = close_time - timedelta(seconds=sig.seconds_remaining)
+
+    order = TrackedOrder(signal=sig, order_id="TEST-mom-dedup", contracts=4, price=Decimal("0.35"))
+    order.state = OrderState.FILLED
+
+    executor = AsyncMock()
+    executor.log_signal = MagicMock()  # synchronous — avoid unawaited-coroutine warnings
+    executor.filled_orders = [order]
+    executor.exit_position.return_value = (True, [])
+
+    book = _orderbook(ticker=sig.ticker, yes_bid=Decimal("0.40"), no_bid=Decimal("0.55"))
+    ws_feed = _ws_feed(sig.ticker, book)
+    # Positive momentum = reversal for NO side
+    window = _mock_window(sig.ticker, momentum_60s=0.002, price_change_pct=0.001)
+
+    for _ in range(3):
+        await _evaluate_exits(
+            executor=executor, ws_feed=ws_feed, alerter=None, symbol="BTC",
+            settings=_mock_settings(), window=window,
+        )
+
+    mom_calls = [
+        c for c in executor.log_signal.call_args_list
+        if c.args[1] == "whatif_momentum_exit"
+    ]
+    assert len(mom_calls) == 1, f"expected 1 momentum_exit shadow, got {len(mom_calls)}"
+
+
+@pytest.mark.asyncio
+async def test_prob_decay_exit_shadow_fires_once_per_order() -> None:
+    """whatif_prob_decay_exit fires exactly once when P(win) drops >=15pp.
+
+    Setup: NO trade, real_prob=0.30, win_prob_entry=0.70.
+    With price_change_pct=0.0, live P(up)=0.5, win_prob_live=0.50, decay=0.20>=0.15.
+    Calling twice must still produce exactly one shadow row.
+    """
+    sig = _signal(side=Side.NO, price=Decimal("0.30"), seconds_remaining=200)
+    sig.real_prob = 0.30
+    close_time = datetime.now(timezone.utc) + timedelta(minutes=5)
+    sig.timestamp = close_time - timedelta(seconds=sig.seconds_remaining)
+
+    order = TrackedOrder(signal=sig, order_id="TEST-pdecay", contracts=4, price=Decimal("0.30"))
+    order.state = OrderState.FILLED
+
+    executor = AsyncMock()
+    executor.log_signal = MagicMock()
+    executor.filled_orders = [order]
+    executor.exit_position.return_value = (True, [])
+
+    # NO bid 0.50: current_value=0.50 (not >=0.75, so convergence won't also fire)
+    book = _orderbook(ticker=sig.ticker, yes_bid=Decimal("0.49"), no_bid=Decimal("0.50"))
+    ws_feed = _ws_feed(sig.ticker, book)
+    window = _mock_window(sig.ticker, momentum_60s=None, price_change_pct=0.0)
+
+    for _ in range(2):
+        await _evaluate_exits(
+            executor=executor, ws_feed=ws_feed, alerter=None, symbol="BTC",
+            settings=_mock_settings(logistic_k=200.0), window=window,
+        )
+
+    pd_calls = [
+        c for c in executor.log_signal.call_args_list
+        if c.args[1] == "whatif_prob_decay_exit"
+    ]
+    assert len(pd_calls) == 1, f"expected 1 prob_decay_exit shadow, got {len(pd_calls)}"
+
+
+@pytest.mark.asyncio
+async def test_convergence_75_shadow_fires_once_per_order() -> None:
+    """whatif_convergence_75 fires exactly once when the exit bid hits >=0.75."""
+    sig = _signal(side=Side.NO, price=Decimal("0.27"), seconds_remaining=200)
+    close_time = datetime.now(timezone.utc) + timedelta(minutes=5)
+    sig.timestamp = close_time - timedelta(seconds=sig.seconds_remaining)
+
+    order = TrackedOrder(signal=sig, order_id="TEST-conv75", contracts=3, price=Decimal("0.27"))
+    order.state = OrderState.FILLED
+
+    executor = AsyncMock()
+    executor.log_signal = MagicMock()
+    executor.filled_orders = [order]
+    executor.exit_position.return_value = (True, [])
+
+    # NO bid 0.77: current_value=0.77 >= 0.75 → convergence fires
+    book = _orderbook(ticker=sig.ticker, yes_bid=Decimal("0.22"), no_bid=Decimal("0.77"))
+    ws_feed = _ws_feed(sig.ticker, book)
+    window = _mock_window(sig.ticker, momentum_60s=None)
+
+    for _ in range(2):
+        await _evaluate_exits(
+            executor=executor, ws_feed=ws_feed, alerter=None, symbol="BTC",
+            settings=_mock_settings(), window=window,
+        )
+
+    conv_calls = [
+        c for c in executor.log_signal.call_args_list
+        if c.args[1] == "whatif_convergence_75"
+    ]
+    assert len(conv_calls) == 1, f"expected 1 convergence_75 shadow, got {len(conv_calls)}"

@@ -799,6 +799,7 @@ async def _fast_eval_loop(
                     # window and the tracker switches to the new ticker.
                     await _evaluate_exits(
                         executor, ws_feed, alerter, symbol=symbol, settings=settings,
+                        window=window,
                     )
 
                     market = cached.get_market(symbol)
@@ -889,6 +890,33 @@ async def _fast_eval_loop(
                                 )
                                 _bump_counter(signal_counters, "whatif_mr")
                                 _record_reason(symbol, ticker, "whatif_mean_reversion")
+
+                            # whatif_price_65_75: momentum signal that would fire
+                            # if we widened max_trade_price to 0.75. Logs only the
+                            # incremental set (price > current cap) so we can track
+                            # whether higher-priced entries have edge.
+                            p6575_signal = evaluate_momentum(
+                                window,
+                                ticker,
+                                orderbook,
+                                edge_threshold=settings.edge_threshold,
+                                k=live_k,
+                                min_time=settings.momentum_min_time,
+                                max_time=settings.momentum_max_time,
+                                min_price=settings.min_trade_price,
+                                max_price=0.75,
+                                maker_first=settings.maker_first,
+                            )
+                            if (
+                                p6575_signal is not None
+                                and float(p6575_signal.kalshi_price) > settings.max_trade_price
+                            ):
+                                executor.log_signal(
+                                    p6575_signal, "whatif_price_65_75",
+                                    f"edge={p6575_signal.net_edge} price={p6575_signal.kalshi_price} side={p6575_signal.side.value}",
+                                )
+                                _bump_counter(signal_counters, "whatif_p6575")
+                                _record_reason(symbol, ticker, "whatif_price_65_75")
                     last_eval_mono[symbol] = now
 
                     if signal is None:
@@ -985,6 +1013,31 @@ async def _fast_eval_loop(
                         signal, "paper_shadow",
                         f"side={signal.side.value} edge={signal.net_edge} price={signal.kalshi_price}",
                     )
+
+                    # Entry sub-cohort shadows — log qualifying subsets of live
+                    # trades so we can measure their win-rate vs the full set.
+                    obi_at_entry = orderbook.orderbook_imbalance
+                    pct_at_entry = window.price_change_pct or 0.0
+                    if signal.net_edge >= Decimal("0.08"):
+                        executor.log_signal(
+                            signal, "whatif_edge_08",
+                            f"net_edge={signal.net_edge} price={signal.kalshi_price}",
+                        )
+                    if abs(obi_at_entry) >= 0.10:
+                        executor.log_signal(
+                            signal, "whatif_obi_strong",
+                            f"obi={obi_at_entry:.4f} price={signal.kalshi_price}",
+                        )
+                    if 200 <= signal.seconds_remaining <= 350:
+                        executor.log_signal(
+                            signal, "whatif_sweet_spot",
+                            f"secs={signal.seconds_remaining} price={signal.kalshi_price}",
+                        )
+                    if abs(pct_at_entry) >= 0.003:
+                        executor.log_signal(
+                            signal, "whatif_strong_move",
+                            f"pct={pct_at_entry:.5f} price={signal.kalshi_price}",
+                        )
 
                     submit_result = await executor.submit(signal, cached.balance)
                     if submit_result.order is not None:
@@ -1594,6 +1647,7 @@ async def _evaluate_exits(
     alerter: AlerterLike,
     symbol: str,
     settings: Settings | None = None,
+    window: WindowState | None = None,
 ) -> None:
     """Check all filled positions for this symbol for the time_exit condition.
 
@@ -1653,7 +1707,7 @@ async def _evaluate_exits(
         should_exit = False
         reason = ""
 
-        if order.signal.seconds_remaining > 90 and order_secs_remaining < 30:
+        if order.signal.seconds_remaining > 90 and order_secs_remaining < 60:
             should_exit = True
             reason = (
                 f"time_exit: entered_at={order.signal.seconds_remaining}s "
@@ -1681,6 +1735,84 @@ async def _evaluate_exits(
                     order_ticker, order.signal.side.value, order.contracts, reason
                 )
                 await _emit_risk_events(alerter, risk_events)
+
+        # Shadow-log novel exit strategies for research. Each key fires at
+        # most once per order (order.shadow_fired gate) so the per-tick loop
+        # does not produce thousands of duplicate rows per position.
+        if not should_exit and window is not None and window.ticker == order_ticker:
+            mom = window.momentum_60s
+            obi = ob_book.orderbook_imbalance
+            is_yes = order.signal.side.value == "yes"
+
+            # whatif_momentum_exit: first tick that momentum has reversed
+            if order.signal.seconds_remaining > 90:
+                mom_reversed = mom is not None and (
+                    (is_yes and mom < 0.0) or (not is_yes and mom > 0.0)
+                )
+                if mom_reversed and "momentum_exit" not in order.shadow_fired:
+                    order.shadow_fired.add("momentum_exit")
+                    trigger = "mom+obi" if (
+                        (is_yes and obi < 0.0) or (not is_yes and obi > 0.0)
+                    ) else "mom"
+                    would_be_pnl = float(current_value - order.price) * order.contracts
+                    executor.log_signal(
+                        order.signal,
+                        "whatif_momentum_exit",
+                        (
+                            f"order_id={order.order_id} exit_price={float(current_value):.3f} "
+                            f"pnl={would_be_pnl:.2f} entry_price={float(order.price):.3f} "
+                            f"contracts={order.contracts} mom={mom:.5f} obi={obi:.4f} "
+                            f"secs={order_secs_remaining} trigger={trigger}"
+                        ),
+                    )
+
+            # whatif_prob_decay_exit: first tick that P(win) has dropped 15pp
+            # from entry. Uses dynamic k so vol-regime shifts are captured.
+            if (
+                settings is not None
+                and "prob_decay_exit" not in order.shadow_fired
+                and window.price_change_pct is not None
+            ):
+                live_k = _k_from_window_prices(window.prices_60s, settings.logistic_k)
+                live_prob = estimate_up_probability(
+                    window.price_change_pct,
+                    order_secs_remaining,
+                    k=live_k,
+                )
+                entry_prob = order.signal.real_prob
+                # For NO trades, win if price goes down → P(win) = 1 - P(up)
+                win_prob_entry = entry_prob if is_yes else (1.0 - entry_prob)
+                win_prob_live = live_prob if is_yes else (1.0 - live_prob)
+                if win_prob_entry - win_prob_live >= 0.15:
+                    order.shadow_fired.add("prob_decay_exit")
+                    would_be_pnl = float(current_value - order.price) * order.contracts
+                    executor.log_signal(
+                        order.signal,
+                        "whatif_prob_decay_exit",
+                        (
+                            f"order_id={order.order_id} exit_price={float(current_value):.3f} "
+                            f"pnl={would_be_pnl:.2f} entry_prob={win_prob_entry:.3f} "
+                            f"live_prob={win_prob_live:.3f} decay={win_prob_entry - win_prob_live:.3f} "
+                            f"k={live_k:.1f} secs={order_secs_remaining}"
+                        ),
+                    )
+
+            # whatif_convergence_75: first tick the exit bid hits 0.75+
+            if (
+                "convergence_75" not in order.shadow_fired
+                and float(current_value) >= 0.75
+            ):
+                order.shadow_fired.add("convergence_75")
+                would_be_pnl = float(current_value - order.price) * order.contracts
+                executor.log_signal(
+                    order.signal,
+                    "whatif_convergence_75",
+                    (
+                        f"order_id={order.order_id} exit_price={float(current_value):.3f} "
+                        f"pnl={would_be_pnl:.2f} entry_price={float(order.price):.3f} "
+                        f"contracts={order.contracts} secs={order_secs_remaining}"
+                    ),
+                )
 
 
 async def _settle_paper_positions(

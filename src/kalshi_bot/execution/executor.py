@@ -94,6 +94,9 @@ class TrackedOrder:
         self.exit_order_id: str | None = None
         self.exit_price: Decimal | None = None
         self.exit_reason: str | None = None
+        # Shadow-log deduplication: each key may only fire once per order so
+        # the per-tick exit loop does not produce thousands of duplicate rows.
+        self.shadow_fired: set[str] = set()
 
     @property
     def fee_per_contract(self) -> float:
