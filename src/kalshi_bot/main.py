@@ -1039,6 +1039,68 @@ async def _fast_eval_loop(
                             f"pct={pct_at_entry:.5f} price={signal.kalshi_price}",
                         )
 
+                    # Ghost mode: trades placed while on a 2+ loss streak.
+                    # We still trade — this is shadow-only — but logging lets us
+                    # measure whether post-loss entries have degraded quality.
+                    # Streak is read from the DB so it survives restarts.
+                    loss_streak = executor.consecutive_losses(symbol)
+                    if loss_streak >= 2:
+                        executor.log_signal(
+                            signal, "whatif_ghost_mode",
+                            f"streak={loss_streak} side={signal.side.value} "
+                            f"edge={signal.net_edge} price={signal.kalshi_price}",
+                        )
+
+                    # Buddy system: does the other asset's spot momentum agree?
+                    # Logs when buddy DISAGREES so we can measure whether
+                    # unconfirmed trades (buddy says opposite direction)
+                    # under-perform vs all trades.
+                    buddy_symbol = "ETH" if symbol == "BTC" else ("BTC" if symbol == "ETH" else None)
+                    if buddy_symbol is not None:
+                        buddy_window = tracker.get_window(buddy_symbol)
+                        if buddy_window is not None and buddy_window.momentum_60s is not None:
+                            signal_is_up = signal.side.value == "yes"
+                            buddy_mom = buddy_window.momentum_60s
+                            buddy_agrees = (
+                                (signal_is_up and buddy_mom > 0.0)
+                                or (not signal_is_up and buddy_mom < 0.0)
+                            )
+                            if not buddy_agrees:
+                                executor.log_signal(
+                                    signal, "whatif_buddy_disagree",
+                                    f"buddy={buddy_symbol} buddy_mom={buddy_mom:.5f} "
+                                    f"signal_side={signal.side.value} price={signal.kalshi_price}",
+                                )
+
+                    # Kalshi spread tightness: YES ask - YES bid as a proxy for
+                    # market confidence. Tight spread means the book is liquid
+                    # and confident; wide spread means the market is uncertain.
+                    yes_bid = orderbook.best_yes_bid
+                    yes_ask = orderbook.best_yes_ask
+                    if yes_bid is not None and yes_ask is not None:
+                        spread = float(yes_ask - yes_bid)
+                        if spread <= 0.03:
+                            executor.log_signal(
+                                signal, "whatif_tight_spread",
+                                f"spread={spread:.3f} price={signal.kalshi_price} side={signal.side.value}",
+                            )
+
+                    # Prior-window continuity: did the previous window settle
+                    # in the same direction as our current signal? Persistence
+                    # of direction across windows might indicate a regime.
+                    prior_result = tracker.get_previous_result(symbol)
+                    if prior_result is not None:
+                        signal_is_up = signal.side.value == "yes"
+                        prior_agrees = (signal_is_up and prior_result.went_up) or (
+                            not signal_is_up and not prior_result.went_up
+                        )
+                        if prior_agrees:
+                            executor.log_signal(
+                                signal, "whatif_prior_window_agrees",
+                                f"prior_went_up={prior_result.went_up} signal_side={signal.side.value} "
+                                f"price={signal.kalshi_price}",
+                            )
+
                     submit_result = await executor.submit(signal, cached.balance)
                     if submit_result.order is not None:
                         _bump_counter(signal_counters, "trade")

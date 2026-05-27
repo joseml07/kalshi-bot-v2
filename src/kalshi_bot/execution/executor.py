@@ -929,6 +929,26 @@ class Executor:
             if o.state == OrderState.CANCELLED and o.placed_at > cutoff
         )
 
+    def consecutive_losses(self, symbol: str, max_check: int = 5) -> int:
+        """Return the current losing streak for symbol (0 if last trade was a win).
+
+        Queries the trades table so the streak survives bot restarts, unlike
+        in-memory counters that reset on every deploy.
+        """
+        rows = self._db.execute(
+            """SELECT CAST(pnl AS REAL) FROM trades
+               WHERE symbol = ? AND pnl IS NOT NULL
+               ORDER BY timestamp DESC LIMIT ?""",
+            (symbol, max_check),
+        ).fetchall()
+        streak = 0
+        for (pnl,) in rows:
+            if pnl < 0:
+                streak += 1
+            else:
+                break
+        return streak
+
     def log_signal(self, signal: Signal, action: str, reason: str = "") -> None:
         """Log a signal evaluation to the signals table."""
         self._db.execute(
