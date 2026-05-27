@@ -9,7 +9,7 @@ import math
 import signal as unix_signal
 import statistics
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -794,20 +794,12 @@ async def _fast_eval_loop(
                         continue
 
                     # --- Exit evaluation (hoisted above market/orderbook gates) ---
-                    # Must run even when market has rolled or orderbook is
-                    # missing for the new ticker.  Uses window.ticker (the
-                    # order's ticker) and its own orderbook lookup so it
-                    # can't be skipped by downstream `continue` branches.
-                    exit_ticker = window.ticker
-                    exit_ob = ws_feed.get_orderbook(exit_ticker)
-                    if exit_ob is not None:
-                        exit_book, _ = exit_ob
-                        await _evaluate_exits(
-                            executor, exit_ticker,
-                            exit_book.best_yes_bid, exit_book.best_no_bid,
-                            alerter, window,
-                            settings=settings,
-                        )
+                    # Uses each order's OWN ticker — not the current window
+                    # ticker — so time_exit fires even after Kalshi rolls the
+                    # window and the tracker switches to the new ticker.
+                    await _evaluate_exits(
+                        executor, ws_feed, alerter, symbol=symbol, settings=settings,
+                    )
 
                     market = cached.get_market(symbol)
                     if market is None:
@@ -1598,57 +1590,95 @@ async def _check_settlements(
 
 async def _evaluate_exits(
     executor: Executor,
-    ticker: str,
-    best_yes_bid: Decimal | None,
-    best_no_bid: Decimal | None,
+    ws_feed: "KalshiOrderbookFeed",
     alerter: AlerterLike,
-    window: WindowState,
+    symbol: str,
     settings: Settings | None = None,
 ) -> None:
-    filled = [o for o in executor.filled_orders if o.signal.ticker == ticker]
-    if not filled:
-        return
+    """Check all filled positions for this symbol for the time_exit condition.
 
-    for order in filled:
-        if order.signal.side.value == "yes":
-            if best_yes_bid is None:
-                continue
-            current_value = best_yes_bid
-        else:
-            if best_no_bid is None:
-                continue
-            current_value = best_no_bid
+    Deliberately uses each order's OWN ticker (not the current window ticker)
+    so it fires correctly after a window transition.  The root bug this fixes:
+    when Kalshi rolls to a new window, tracker.get_window() immediately returns
+    the NEW ticker, so the old exit check saw zero matching positions and the
+    position drifted to settlement.
 
-        # Binary contracts cap loss at entry_price by construction. Backtest of 306
-        # settled trades showed stop_loss + edge_gone exits converted 112 winning
-        # entries into recorded losses (-$95.92 vs hold-to-settlement).
-        #
-        # The 60% stop_loss Gemini added on 2026-05-24 was reverted on the same day:
-        # the +2.3% backtest improvement was within noise, and live afternoon-slide
-        # losses on 2026-05-23 (-$26 in 7h) were full settlement losses that stop_loss
-        # could not have prevented.  Only time_exit survives until new evidence shows
-        # intra-window drawdowns predict settlement outcomes (per memory note).
+    seconds_remaining is computed from the signal's creation timestamp, not
+    from the live window, for the same reason — once the window rolls the live
+    tracker no longer has the old window's close_time.
+    """
+    now_utc = datetime.now(timezone.utc)
+    for order in list(executor.filled_orders):
+        if order.signal.symbol != symbol:
+            continue
+
+        order_ticker = order.signal.ticker
+        ob = ws_feed.get_orderbook(order_ticker)
+
+        # Compute seconds remaining from signal creation + window duration.
+        # signal.seconds_remaining was stamped at entry, so:
+        #   close_time = signal.timestamp + timedelta(seconds=signal.seconds_remaining)
+        order_close_time = order.signal.timestamp + timedelta(
+            seconds=order.signal.seconds_remaining
+        )
+        order_secs_remaining = max(
+            0, int((order_close_time - now_utc).total_seconds())
+        )
+
+        if ob is None:
+            # WS feed for old ticker gone — log and skip; already settled or
+            # housekeeping will catch it.
+            if order_secs_remaining < 60:
+                logger.warning(
+                    "exit_no_orderbook",
+                    ticker=order_ticker,
+                    order_secs_remaining=order_secs_remaining,
+                    note="orderbook gone near window close — possible missed time_exit",
+                )
+            continue
+
+        ob_book, ob_ts = ob
+        ob_age_s = (now_utc - ob_ts).total_seconds()
+
+        current_value = (
+            ob_book.best_yes_bid
+            if order.signal.side.value == "yes"
+            else ob_book.best_no_bid
+        )
+        if current_value is None:
+            continue
+
+        # Binary contracts: only time_exit survives. stop_loss and take_profit
+        # both destroyed edge in backtest (see HANDOFF.md).
         should_exit = False
         reason = ""
 
-        # Take-profit was disabled 2026-05-23 after backtest showed it cost
-        # ~14% PnL by locking in 60c partial wins on contracts that settle at
-        # $1.00.  Original motivation (preventing 1730-style unrealized swings)
-        # is already addressed by MAX_CONTRACTS=10 sizing cap.
-
-        if not should_exit and order.signal.seconds_remaining > 90 and window.seconds_remaining < 30:
+        if order.signal.seconds_remaining > 90 and order_secs_remaining < 30:
             should_exit = True
             reason = (
                 f"time_exit: entered_at={order.signal.seconds_remaining}s "
-                f"now={window.seconds_remaining}s"
+                f"now={order_secs_remaining}s ob_age={ob_age_s:.1f}s"
             )
 
+        logger.info(
+            "exit_eval",
+            ticker=order_ticker,
+            side=order.signal.side.value,
+            entered_at_s=order.signal.seconds_remaining,
+            order_secs_remaining=order_secs_remaining,
+            ob_age_s=round(ob_age_s, 1),
+            current_value=float(current_value),
+            should_exit=should_exit,
+        )
+
         if should_exit:
-            logger.info("exit_signal", ticker=ticker, reason=reason)
-            exited, risk_events = await executor.exit_position(order, current_value, exit_reason=reason.split(":", 1)[0])
+            logger.info("exit_signal", ticker=order_ticker, reason=reason)
+            exited, risk_events = await executor.exit_position(
+                order, current_value, exit_reason=reason.split(":", 1)[0]
+            )
             if exited and alerter is not None:
                 await alerter.trade_exited(
-                    ticker, order.signal.side.value, order.contracts, reason
+                    order_ticker, order.signal.side.value, order.contracts, reason
                 )
                 await _emit_risk_events(alerter, risk_events)
 
