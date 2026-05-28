@@ -27,6 +27,10 @@ class RiskManager:
     """Pre-trade risk gate."""
 
     def __init__(self, settings: Settings) -> None:
+        # In paper mode all P&L-based vetoes are bypassed — the whole point
+        # of paper trading is unobstructed signal observation. Capital-safety
+        # checks (kill switch, concurrent positions) still apply.
+        self._paper_mode: bool = settings.trading_mode == "paper"
         self._daily_loss_limit = Decimal(str(settings.daily_loss_limit))
         self._max_concurrent = settings.max_concurrent_positions
         self._daily_pnl: Decimal = Decimal("0")
@@ -66,8 +70,9 @@ class RiskManager:
         self._rotate_day()
         self._check_locked_side(signal)
         self._check_kill_switch()
-        self._check_daily_loss()
-        self._check_per_side_daily_loss(signal)
+        if not self._paper_mode:
+            self._check_daily_loss()
+            self._check_per_side_daily_loss(signal)
         self._check_concurrent_positions(signal.ticker)
         if orderbook is not None:
             self._check_crossed_book(orderbook)

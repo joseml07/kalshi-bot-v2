@@ -122,6 +122,7 @@ def _settings_with_per_side(limit: float = 10.0, wr_enabled: bool = True) -> Set
     return Settings(
         kalshi_api_key="k",
         kalshi_private_key_path="./kalshi_key.pem",
+        trading_mode="live",  # P&L vetoes only apply in live mode
         daily_loss_limit=100.0,  # large; per-side limit should bind first
         max_concurrent_positions=10,
         per_side_daily_loss_limit=limit,
