@@ -1,4 +1,4 @@
-# Session Handoff — 2026-05-23 through 2026-05-26
+# Session Handoff — 2026-05-23 through 2026-05-28
 
 ## Executive Summary
 
@@ -12,13 +12,14 @@ This was a 4-day intensive session spanning research, paper validation, and live
 
 ## Current Live Bot State
 
-- **PID:** 1866182
-- **Mode:** live
-- **Balance:** ~$14-15 (started session at ~$13, deposited $10, lost ~$9 from high-price entries + afternoon trading before fixes)
+<!-- Updated 2026-05-28 — bot is running in PAPER mode while shadow data accumulates -->
+- **PID:** 1972116
+- **Mode:** paper (TRADING_MODE=paper in .env — switched from live after cumulative losses; collecting shadow data)
+- **Balance:** $25 (paper bankroll)
 - **Strategy:** Momentum only (mean reversion shadow-logged, not traded)
 - **Kelly:** 0.25
 - **Symbols:** BTC, ETH (SOL disabled)
-- **YES side:** enabled
+- **YES side:** enabled (but live data shows 34.2% WR, -$10.95 — strong case for disabling)
 - **Exit policy:** time_exit only at T-30s
 - **MAX_TRADE_PRICE:** 0.65 (lowered from 0.85)
 - **MIN_TRADE_PRICE:** 0.25
@@ -28,6 +29,55 @@ This was a 4-day intensive session spanning research, paper validation, and live
 - **Composite pricing:** ON (Coinbase + Kraken + Bitstamp)
 - **Off-hours gate:** 20-23 UTC (no live trades, shadow-logs normal + inverted signals)
 - **Dashboard:** port 8082, strategy/side/exit breakdowns
+- **Tests:** 110 passing
+
+---
+
+## What Happened — Session 2026-05-27/28
+
+### YES Side Discovery (Critical)
+Analyzed all-time live trade data by side:
+- **NO side:** 75.5% WR, +$460.48 — the entire profit engine
+- **YES side:** 34.2% WR, -$10.95 — dead weight
+
+YES trades are losing money consistently. The bot is profitable only because NO side carries it. This is the strongest unsolved live finding. `YES_SIDE_DISABLED=false` is the current setting — disabling it is the clearest improvement available but needs paper validation first to confirm NO-only doesn't also degrade.
+
+### Shadow Log Dedupe Bug Fixed
+`whatif_momentum_exit` was firing every ~1 second once its condition was met — confirmed 843 rows per single order in the DB. Root cause: no per-order dedup. Fixed by adding `shadow_fired: set[str]` to `TrackedOrder`. Each shadow key can only fire once per order.
+
+### New Shadow Logs Added (14 total across entry + exit)
+**Exit shadows** (fire at most once per order):
+- `whatif_momentum_exit` — momentum reversal during hold (deduped with `shadow_fired`)
+- `whatif_prob_decay_exit` — dynamic-k probability dropped ≥15pp from entry (deduped)
+- `whatif_convergence_75` — position value crossed 75c during hold (profit lock shadow)
+
+**Entry shadows** (log alongside every signal, including blocked ones):
+- `whatif_edge_08` — signal would have passed with edge_threshold=0.08 (stricter)
+- `whatif_obi_strong` — OBI magnitude > 0.30 (stronger conviction filter)
+- `whatif_sweet_spot` — price in 0.45-0.55 (market near 50/50)
+- `whatif_strong_move` — momentum_60s > 2× the signal's threshold
+- `whatif_ghost_mode` — consecutive losses ≥ 2 for that symbol (would have paused)
+- `whatif_buddy_disagree` — cross-asset BTC/ETH momentum disagrees with signal
+- `whatif_tight_spread` — YES spread ≤ 0.03 (tight book = better fill quality)
+- `whatif_prior_window_agrees` — previous 15m window moved in same direction as signal
+- `whatif_price_65_75` — signal would have triggered with MAX_TRADE_PRICE=0.75 (NO side expansion test)
+
+### Paper Mode P&L Veto Bypass
+Bug: daily loss limit ($10) was blocking paper trading. Bot hit -$11.19 at 3:40 AM UTC and went silent for the rest of the day — exactly the wrong behavior for paper mode, which exists to observe signals without restriction.
+
+Fix: `RiskManager.check()` now skips `_check_daily_loss` and `_check_per_side_daily_loss` when `trading_mode == "paper"`. Kill switch and concurrent position limits still apply (they guard state correctness, not capital).
+
+Commit: `045f30c` — "fix: bypass P&L-based risk vetoes in paper mode"
+
+### Regime Filter Research (Box Filter Ruled Out)
+Tested four regime filter ideas against 46-day backtest:
+1. **Ghost Mode** (pause on 2+ consecutive losses) — shadow logs deployed, data collection in progress
+2. **Time-of-Day** — already deployed as 20-23 UTC gate
+3. **Box Filter** (chop vs trending regime) — **SKIP**: WR was 73%/74.6%/72.3% across chop/moderate/trending. Flat. Momentum+OBI already handles chop by not generating signals.
+4. **Buddy System** (BTC+ETH agree) — backtest shows 81.3% WR when both agree vs 62.6% baseline. Shadow deployed as `whatif_buddy_disagree`. Needs live data collection.
+
+### Settlement Loss Analysis
+Confirmed settlement losses are NOT a mechanical exit failure. They are "bound to lose" trades: market moves so hard in the wrong direction that Kalshi empties the book before our exit window. The 1.4% WR on settlement vs 62.6% on time_exit confirms these are structurally different outcomes — the position was wrong from entry, not a missed exit.
 
 ---
 
@@ -170,11 +220,30 @@ This is the central unsolved problem. The strategy shows 91% WR and $79K PnL in 
 
 ## Shadow Trade Logging
 
-Three types logged in the `signals` table (action column):
+<!-- Updated 2026-05-28 — expanded to 14 shadow types across entry + exit -->
+Logged in the `signals` table (action column):
+
+**Strategy/gate shadows:**
 - `whatif_mean_reversion` — mean reversion signals that would have traded
 - `whatif_offpeak` — signals during 20-23 UTC (blocked from live trading)
 - `whatif_inverted_offpeak` — INVERTED version of off-peak signals (if bot says YES, logs NO)
 - `paper_shadow` — logged alongside every live trade for fill comparison
+
+**Exit shadows (per-order deduped via `TrackedOrder.shadow_fired`):**
+- `whatif_momentum_exit` — momentum reversed during hold (T>90s)
+- `whatif_prob_decay_exit` — live win probability dropped ≥15pp vs entry
+- `whatif_convergence_75` — position value hit ≥0.75 during hold
+
+**Entry quality shadows (logged after paper_shadow, one per signal evaluation):**
+- `whatif_edge_08` — would pass stricter edge_threshold=0.08
+- `whatif_obi_strong` — OBI magnitude > 0.30
+- `whatif_sweet_spot` — kalshi price 0.45-0.55
+- `whatif_strong_move` — momentum_60s > 2× threshold
+- `whatif_ghost_mode` — would have been blocked by ghost mode (streak ≥ 2 losses)
+- `whatif_buddy_disagree` — cross-asset BTC/ETH momentum disagrees
+- `whatif_tight_spread` — YES spread ≤ 0.03
+- `whatif_prior_window_agrees` — previous window moved same direction as signal
+- `whatif_price_65_75` — signal would trigger if MAX_TRADE_PRICE raised to 0.75
 
 Query examples:
 ```sql
@@ -284,13 +353,20 @@ MAX_CONCURRENT_POSITIONS=3
 8. **Don't let multiple AIs make contradictory changes**
 9. **Don't raise MAX_TRADE_PRICE above 0.65** — high-price entries lose live
 10. **Don't panic on single trade losses** — the strategy recovers (went from -$5 to +$6 overnight)
+11. **Don't apply P&L risk vetoes in paper mode** — paper exists to observe signals, not protect capital. Kill switch + concurrent limits still apply. (Fixed 2026-05-28, commit 045f30c)
+12. **Don't add box filter / regime detection** — tested 46-day backtest, WR flat across all regimes (73/74/72%). Momentum+OBI already implicitly filters by not generating signals in chop.
+13. **Don't enable YES side on live without paper validation** — YES is 34.2% WR, -$10.95 all-time live. NO side (75.5% WR, +$460) carries the entire profit engine.
 
 ---
 
 ## Priority TODO
 
-1. **FIX protocol integration** — biggest potential PnL improvement. Kalshi supports it.
-2. **AWS US-East migration** — free student credits, ~20-30ms latency reduction
-3. **Collect shadow data** — let off-peak + inverted + mean reversion shadow logs accumulate for 1-2 weeks
-4. **Investigate settlement leaks** — why do some trades still miss time_exit despite min_time=91?
-5. **Consider edge=0.08** — backtest best at $112K but untested live. Paper validate first.
+1. **Evaluate YES_SIDE_DISABLED=true** — live data shows YES at 34.2% WR, -$10.95. Paper validate NO-only for 1-2 weeks before going live NO-only.
+2. **Validate ghost mode shadow data** — after ~1 week of `whatif_ghost_mode` logs, compare WR of trades with streak≥2 vs streak=0. If WR difference is real, deploy.
+3. **Validate buddy system shadow data** — after ~1 week of `whatif_buddy_disagree` logs, compare WR when BTC+ETH agree vs disagree. Backtest: 81.3% agree vs 62.6% overall.
+4. **FIX protocol integration** — biggest potential PnL improvement. Kalshi supports it.
+5. **AWS US-East migration** — free student credits, ~20-30ms latency reduction
+6. **Collect shadow data** — let all 14 shadow log types accumulate for 1-2 weeks before drawing conclusions
+7. **Investigate settlement leaks** — why do some trades still miss time_exit despite min_time=91?
+8. **Consider edge=0.08** — backtest best at $112K but untested live. Paper validate first.
+9. **Check `whatif_price_65_75`** — NO side at 78.6% WR in initial data. Could justify widening MAX_TRADE_PRICE for NO side only (YES still capped at 0.65).

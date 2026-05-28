@@ -14,21 +14,22 @@ Async Python bot that trades Kalshi's 15-minute crypto up/down binary contracts 
 6. **Don't re-enable stop_loss or take_profit** — both proven to destroy edge.
 7. **Don't deploy backtest findings without paper validation** — backtest ≠ live.
 
-## Current Live Config (.env)
+## Current Config (.env)
 
+<!-- Updated 2026-05-28 — currently running PAPER mode for shadow data collection -->
 ```
-TRADING_MODE=live
+TRADING_MODE=paper             (paper mode; P&L vetoes bypassed, signals observed freely)
 SYMBOLS=BTC,ETH               (SOL disabled — no backtest data)
 KELLY_FRACTION=0.25
 EDGE_THRESHOLD=0.04
 MOMENTUM_MIN_TIME=91           (ensures all entries qualify for time_exit)
 MAX_TRADE_PRICE=0.65           (entries above 0.70 lose money live)
 MIN_TRADE_PRICE=0.25
-YES_SIDE_DISABLED=false
+YES_SIDE_DISABLED=false        (YES 34.2% WR, -$10.95 live — pending paper validation for NO-only)
 OFFPEAK_START_UTC=20           (no trading 20-23 UTC — consistently loses)
 OFFPEAK_END_UTC=23
 MAKER_FIRST=false
-DAILY_LOSS_LIMIT=10.0
+DAILY_LOSS_LIMIT=10.0          (only enforced in live mode — paper bypasses this)
 PER_SIDE_DAILY_LOSS_LIMIT=0    (disabled)
 ```
 
@@ -67,7 +68,7 @@ src/kalshi_bot/
   alerts/discord_bot.py  — same commands for Discord
   dashboard.py           — REST API + strategy/side/exit breakdowns
   dashboard.html         — web UI with dynamic k display
-tests/                   — 105 tests
+tests/                   — 110 tests
 ```
 
 ## Key Commands
@@ -92,8 +93,10 @@ tests/                   — 105 tests
 - Stop-loss exit (destroys edge)
 - Entries above $0.70 (risk/reward inverted)
 - Trading 20-23 UTC (3W-16L, -$33 across all live sessions)
-- Settlement trades (0% WR across all live data)
+- Settlement trades (~1.4% WR — market moves so hard the book empties; not a mechanical exit failure)
 - SOL (thin books, no backtest data)
+- **YES side (34.2% WR, -$10.95 all-time live)** — NO side (75.5% WR, +$460) is the entire profit engine
+- Box filter / regime detection — WR flat across chop/moderate/trending (73/74/72%); useless
 
 ## Backtest Data
 
@@ -112,15 +115,47 @@ tests/                   — 105 tests
 
 ## Shadow Trade Logging
 
-Three types of shadow trades logged in the `signals` table:
+<!-- Updated 2026-05-28 — 14 shadow types; all per-order exit shadows deduped via TrackedOrder.shadow_fired -->
+Logged in the `signals` table (action column):
+
+**Strategy/gate shadows:**
 - `whatif_mean_reversion` — mean reversion signals (would have traded)
 - `whatif_offpeak` — signals during 20-23 UTC (blocked)
-- `paper_shadow` — logged alongside every live trade for fill comparison
+- `whatif_inverted_offpeak` — inverted version of off-peak signals (logs opposite side)
+- `paper_shadow` — logged alongside every paper/live trade for fill comparison
 
-Query example: `SELECT * FROM signals WHERE action = 'whatif_offpeak' AND timestamp >= '2026-05-26';`
+**Exit shadows (fire at most once per order via `TrackedOrder.shadow_fired`):**
+- `whatif_momentum_exit` — momentum reversed during hold (fires when T>90s)
+- `whatif_prob_decay_exit` — dynamic-k win probability dropped ≥15pp vs entry
+- `whatif_convergence_75` — position value hit ≥0.75c during hold (profit lock check)
+
+**Entry quality shadows (logged after paper_shadow, one per signal):**
+- `whatif_edge_08` — signal passes stricter edge_threshold=0.08
+- `whatif_obi_strong` — OBI magnitude > 0.30
+- `whatif_sweet_spot` — price in 0.45-0.55 (market near 50/50)
+- `whatif_strong_move` — momentum_60s > 2× threshold
+- `whatif_ghost_mode` — would pause (consecutive losses ≥ 2 for that symbol)
+- `whatif_buddy_disagree` — cross-asset BTC/ETH momentum disagrees with signal
+- `whatif_tight_spread` — YES spread ≤ 0.03 (tight book = better fills)
+- `whatif_prior_window_agrees` — previous 15m window moved same direction as signal
+- `whatif_price_65_75` — would trigger if MAX_TRADE_PRICE raised to 0.75
+
+Query examples:
+```sql
+SELECT action, COUNT(*), SUM(CASE WHEN win THEN 1 ELSE 0 END) FROM signals
+WHERE timestamp >= date('now', '-7 days') GROUP BY action;
+
+SELECT * FROM signals WHERE action = 'whatif_ghost_mode' AND timestamp >= '2026-05-28';
+```
 
 ## Known Issues
 
-- Settlement trades always lose (0% WR live). time_exit catches most but not all — some trades enter late or the exit check misses the window transition.
+- Settlement trades always lose (~1.4% WR live). These are structurally different from time_exit trades — the market moves so far against the position that Kalshi empties the book before exit. Not fixable with a better exit mechanism; the position was wrong from entry.
 - Kalshi WS goes stale for 15-30s during window transitions (normal — new ticker subscription takes time).
 - Backtest shows 91% WR but live is ~50%. Gap is from execution differences (latency, fills, settlement source mismatch).
+- YES side is a persistent loser (34.2% WR, -$10.95 all-time). NO side (75.5% WR) carries the bot. Root cause unknown — possibly retail YES bias on crypto contracts, or asymmetric fill quality.
+- Paper mode was previously blocked by daily loss limit ($10). Fixed 2026-05-28: P&L vetoes are now bypassed in paper mode.
+
+## Risk Manager Paper Mode Behavior
+
+`RiskManager.check()` skips `_check_daily_loss` and `_check_per_side_daily_loss` when `trading_mode == "paper"`. Kill switch, concurrent position limits, cooldowns, and locked-side checks all still apply. This was fixed in commit `045f30c` after the bot went silent for hours after hitting the $10 daily loss limit while in paper mode.
