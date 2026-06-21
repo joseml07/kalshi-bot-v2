@@ -385,6 +385,88 @@ The May 23 transition was instantaneous (1 day). Model+0.15 WR dropped from 44%�
 
 ---
 
+## 17. RISK METRICS & POSITION SIZING (SELL>=85c)
+
+### Win/Loss Profile (all-time, 3,592 trades)
+| Outcome | N | % | Avg P&L | Avg Entry Price |
+|---|---|---|---|---|
+| WIN (DOWN) | 751 | 20.9% | **+$0.868** | 0.868 |
+| LOSS (UP) | 2,841 | 79.1% | **-$0.132** | 0.868 |
+
+**Payoff ratio: 6.6:1** (win $0.87, lose $0.13 per $1 contract)
+
+### Streak Analysis
+| Metric | Value |
+|---|---|
+| Max consecutive losses | **42** |
+| Max consecutive wins | 10 |
+| Average loss streak | 5.8 |
+
+### Kelly Sizing
+- Full Kelly: **8.9%** of bankroll per trade
+- Half Kelly: **4.4%** 
+- Conservative (2% risk): 15 contracts per $100 bankroll
+
+### Drawdown Simulation ($100 account, 2% risk)
+| Scenario | Detail |
+|---|---|
+| Per-trade risk | $2.00 (15 contracts × $0.132 max loss) |
+| Expected daily P&L | ~$102/day (88 trades × $1.16) |
+| Worst historical DD | **-$83.16** (42 consecutive losses = 83% of account) |
+| Safe sizing (1% risk) | 7 contracts, worst DD = $38.81 (39%) |
+
+**Recommendation**: Start at 0.5-1% per-trade risk until 100+ live trades validate the WR.
+
+---
+
+## 18. NO SIDE SWEET SPOT (Bot's Own Data)
+
+The bot's existing momentum strategy has a hidden goldmine: NO entries at $0.25-0.35.
+
+| Entry Band | N | WR | Total P&L | **Avg/Trade** |
+|---|---|---|---|---|
+| 15-25c | 28 | 32.1% | +$8.67 | $0.31 |
+| **25-35c** | 223 | 49.3% | **+$216.40** | **$0.97** |
+| 35-45c | 353 | 54.4% | +$207.13 | $0.59 |
+| 45c+ | 548 | 53.1% | +$34.50 | $0.06 |
+
+The 25-35c band (YES at 65-75c) is the bot's most profitable regime — $0.97/trade average, almost entirely from the momentum strategy with time_exit. This complements our SELL>=85c strategy: together they cover YES at 65-75c AND 85-99c.
+
+**All-time NO vs YES side:**
+| Side | N | WR | Total P&L | Avg |
+|---|---|---|---|---|
+| NO | 1,152 | 52.3% | **+$466.70** | $0.405 |
+| YES | 1,666 | 21.6% | -$232.63 | -$0.140 |
+
+---
+
+## 19. CROSS-ASSET CORRELATION
+
+BTC's previous window result does NOT predict ETH's next window:
+- BTC was UP → ETH UP 47.3% (n=2,740)
+- BTC was DOWN → ETH UP 50.1% (n=2,864)
+
+Cross-asset momentum is essentially random. No arb opportunity here.
+
+---
+
+## 20. LATE REVERSAL PATTERNS
+
+Windows where crypto direction flips in the last 2 minutes:
+
+| Early → Late | N | Final UP WR | Trade? |
+|---|---|---|---|
+| DOWN → UP | 21 | **100.0%** | Buy YES (rare) |
+| UP → DOWN | 181 | 3.9% (96.1% DOWN) | Sell YES |
+| FLAT → UP | 702 | **94.9%** | Buy YES |
+| FLAT → DOWN | 1,246 | 2.1% (97.9% DOWN) | Sell YES |
+| UP → FLAT | 1,201 | 49.5% | Coinflip |
+| DOWN → FLAT | 137 | 16.1% | Lean DOWN |
+
+**Late reversal arbitrage (UP→DOWN)**: At reversal point, avg YES ask = 8.9c (crashed from expensive). Selling YES at reversal yields +$0.05/trade. The edge exists but is small — catching the exact reversal moment is the hard part.
+
+---
+
 ## 12. OPEN QUESTIONS
 
 1. **What caused the May 23 regime change?** Was it a Kalshi liquidity change, crypto volatility shift, or model drift?
