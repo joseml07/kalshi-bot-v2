@@ -28,6 +28,7 @@ class StrategyName(str, Enum):
     MOMENTUM = "momentum"
     MEAN_REVERSION = "mean_reversion"
     LWM = "lwm"
+    SETTLEMENT_EDGE = "settlement_edge"
 
 
 class Signal(BaseModel):

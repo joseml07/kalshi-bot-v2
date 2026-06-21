@@ -85,6 +85,7 @@ from kalshi_bot.strategy.fees import maker_fee, taker_fee
 from kalshi_bot.strategy.lwm import evaluate_lwm
 from kalshi_bot.strategy.mean_reversion import evaluate_mean_reversion
 from kalshi_bot.strategy.momentum import evaluate_momentum
+from kalshi_bot.strategy.settlement_edge import evaluate_settlement_edge
 from kalshi_bot.strategy.probability import estimate_k_from_vol, estimate_up_probability
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger()
@@ -852,6 +853,29 @@ async def _fast_eval_loop(
                             no_side_edge_bonus=settings.lwm_no_side_edge_bonus,
                             maker_first=settings.maker_first,
                         )
+                    elif settings.strategy_name == "settlement_edge":
+                        # V3 Settlement Edge: sell expensive YES, hold to expiry.
+                        # Based on STRATEGY_RESEARCH.md — survived the May 23 regime change.
+                        allowed_hours = None
+                        if settings.settlement_edge_allowed_hours:
+                            allowed_hours = [
+                                int(h.strip()) for h in settings.settlement_edge_allowed_hours.split(",") if h.strip()
+                            ] or None
+                        signal = evaluate_settlement_edge(
+                            window,
+                            ticker,
+                            orderbook,
+                            sell_threshold=settings.settlement_edge_sell_threshold,
+                            edge_threshold=settings.settlement_edge_higher_edge_threshold,
+                            min_time=settings.settlement_edge_min_time,
+                            max_time=settings.settlement_edge_max_time,
+                            allowed_hours=allowed_hours,
+                            require_crypto_down=settings.settlement_edge_require_crypto_down,
+                            crypto_down_threshold=settings.settlement_edge_crypto_down_threshold,
+                            min_total_depth=settings.settlement_edge_min_depth,
+                            max_spread=settings.settlement_edge_max_spread,
+                            maker_first=False,  # settlement edge always taker
+                        )
                     else:
                         live_k = _k_from_window_prices(
                             window.prices_60s, settings.logistic_k
@@ -989,12 +1013,14 @@ async def _fast_eval_loop(
                         )
                         continue
 
-                    # Off-hours gating: block trading during historically losing hours
+                    # Off-hours gating: block trading during historically losing hours.
+                    # Settlement edge strategy bypasses this — data shows 22 UTC is actually
+                    # the best hour for selling expensive YES (see STRATEGY_RESEARCH.md).
                     current_hour = datetime.now(timezone.utc).hour
                     in_offpeak = (
                         settings.offpeak_start_utc <= current_hour <= settings.offpeak_end_utc
                     )
-                    if in_offpeak:
+                    if in_offpeak and signal.strategy.value != "settlement_edge":
                         inv_side = "no" if signal.side.value == "yes" else "yes"
                         executor.log_signal(
                             signal, "whatif_offpeak",
@@ -1766,10 +1792,14 @@ async def _evaluate_exits(
 
         # Binary contracts: only time_exit survives. stop_loss and take_profit
         # both destroyed edge in backtest (see HANDOFF.md).
+        # Settlement edge strategy holds to expiry — skip time_exit.
         should_exit = False
         reason = ""
 
-        if order.signal.seconds_remaining > 90 and order_secs_remaining < 60:
+        if order.signal.strategy.value == "settlement_edge":
+            # Hold to settlement, no early exit
+            pass
+        elif order.signal.seconds_remaining > 90 and order_secs_remaining < 60:
             should_exit = True
             reason = (
                 f"time_exit: entered_at={order.signal.seconds_remaining}s "

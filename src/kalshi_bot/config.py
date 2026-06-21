@@ -33,8 +33,23 @@ class Settings(BaseSettings):
     max_concurrent_positions: int = Field(default=3)
     kelly_fraction: float = Field(default=0.25, ge=0.01, le=1.0)
 
-    # Strategy selection: "momentum" (default, V2) or "lwm" (legacy)
-    strategy_name: str = Field(default="momentum", pattern=r"^(lwm|momentum)$")
+    # Strategy selection: "momentum" (default, V2), "lwm" (legacy), "settlement_edge" (V3)
+    strategy_name: str = Field(default="settlement_edge", pattern=r"^(lwm|momentum|settlement_edge)$")
+
+    # Settlement edge strategy (V3 — sell expensive YES, hold to expiry)
+    settlement_edge_enabled: bool = Field(default=True)
+    settlement_edge_sell_threshold: float = Field(default=0.85, ge=0.50, le=0.99)
+    settlement_edge_min_time: int = Field(default=10)
+    settlement_edge_max_time: int = Field(default=900)
+    settlement_edge_allowed_hours: str = Field(
+        default="",
+        description="Comma-separated UTC hours, e.g. '4,13,18,22'. Empty = all hours.",
+    )
+    settlement_edge_require_crypto_down: bool = Field(default=False)
+    settlement_edge_crypto_down_threshold: float = Field(default=-0.001)
+    settlement_edge_min_depth: int = Field(default=100)
+    settlement_edge_max_spread: float = Field(default=0.03)
+    settlement_edge_higher_edge_threshold: float = Field(default=0.02)
     
     # Shared strategy gates
     edge_threshold: float = Field(default=0.06)
