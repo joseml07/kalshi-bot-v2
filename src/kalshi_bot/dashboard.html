@@ -306,6 +306,7 @@ pre.code {
   <div class="tabs">
     <button class="tabbtn active" data-tab="live">Live</button>
     <button class="tabbtn" data-tab="performance">Performance</button>
+    <button class="tabbtn" data-tab="strategy">Strategy</button>
     <button class="tabbtn" data-tab="insights">Insights</button>
     <button class="tabbtn" data-tab="trades">Trades</button>
     <button class="tabbtn" data-tab="analysis">Analysis</button>
@@ -435,6 +436,13 @@ pre.code {
         <div class="body"><div class="chart-shell chart-wrap"><canvas id="rwrChart"></canvas></div></div>
       </div>
     </div>
+  </section>
+
+  <section id="tab-strategy" class="tab">
+    <section class="section">
+      <h2>Strategy Comparison <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-weight:normal;font-size:.74rem;margin-left:6px">(simulated: SELL>=85c, June 2026, $200 start)</span></h2>
+      <div class="body"><div class="chart-shell" style="height:380px"><canvas id="strategyChart"></canvas></div></div>
+    </section>
   </section>
 
   <section id="tab-trades" class="tab">
@@ -1203,6 +1211,52 @@ function renderRollingWrChart(series) {
   });
 }
 
+function renderStrategyChart(datasets) {
+  if (!datasets || !datasets.length) return;
+  // Build labels from the longest dataset's x values
+  const maxLen = Math.max(...datasets.map(d => d.data.length));
+  const labels = Array.from({length: maxLen}, (_, i) => i);
+
+  const ds = datasets.map(d => ({
+    label: d.label,
+    data: d.data.map(p => p ? p.y : null),
+    borderColor: d.borderColor,
+    backgroundColor: 'transparent',
+    fill: false,
+    pointRadius: 0,
+    tension: 0.1,
+    borderWidth: 1.5,
+  }));
+
+  ensureChart('strategyChart', {
+    type: 'line',
+    data: { labels, datasets: ds },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#9ba7b9', usePointStyle: true, boxWidth: 8 } },
+        tooltip: {
+          callbacks: {
+            label: ctx => ctx.dataset.label + ': $' + Number(ctx.parsed.y).toFixed(2),
+          }
+        },
+      },
+      scales: {
+        y: {
+          ticks: { color: '#9ba7b9', callback: v => '$' + v },
+          grid: { color: 'rgba(255,255,255,0.04)' },
+        },
+        x: {
+          title: { display: true, text: 'Trade number', color: '#6b7280' },
+          ticks: { color: '#9ba7b9', maxTicksLimit: 12, callback: (v,i) => i%200===0 ? v : '' },
+          grid: { display: false },
+        },
+      },
+    },
+  });
+}
+
 /* ── P&L Calendar ── */
 let _calData = {};   // { "2026-05-21": {pnl, trades, wins, losses} }
 let _calYear = 0;
@@ -1373,7 +1427,7 @@ function renderAnalyses(rows){
 
 async function loadStatic(){
   const q=viewAll?'?all=true':'';
-  const [summary,stats,pnl,routes,trades,signals,analyses,symbols,health,balance,settings,killState,breakdowns,pnlHistory] = await Promise.all([
+  const [summary,stats,pnl,routes,trades,signals,analyses,symbols,health,balance,settings,killState,breakdowns,pnlHistory,strategyCompare] = await Promise.all([
     fetch('/api/summary'+q).then(r=>r.json()),
     fetch('/api/stats'+q).then(r=>r.json()),
     fetch('/api/pnl_rolling'+q).then(r=>r.json()),
@@ -1388,6 +1442,7 @@ async function loadStatic(){
     fetch('/api/kill_switch').then(r=>r.json()).catch(()=>({kill_switch_active:false})),
     fetch('/api/breakdowns'+q).then(r=>r.json()).catch(()=>null),
     fetch('/api/pnl_history?all=true').then(r=>r.json()).catch(()=>[]),
+    fetch('/api/strategy_comparison').then(r=>r.json()).catch(()=>[]),
   ]);
 
   renderKpis(summary,stats,balance);
@@ -1429,6 +1484,7 @@ async function loadStatic(){
     renderDrawdownChart(breakdowns.time_series || []);
     renderRollingWrChart(breakdowns.time_series || []);
   }
+  renderStrategyChart(strategyCompare || []);
 }
 
 function renderKillState(ks){

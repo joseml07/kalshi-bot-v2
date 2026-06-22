@@ -1268,6 +1268,97 @@ def api_logs_stats(max_bytes: int = _LOG_SCAN_CAP_BYTES) -> dict[str, Any]:
     }
 
 
+@app.get("/api/strategy_comparison")
+def api_strategy_comparison() -> list[dict[str, Any]]:
+    """Trade-by-trade balance for BASELINE, GATE, MULTIPLIER strategies.
+
+    Simulates SELL>=85c strategy across all June 2026 trades at $200 start,
+    10 base contracts. Returns arrays of (trade_index, balance) for charting.
+    """
+    db_path = Path("trades.db")
+    if not db_path.exists():
+        return []
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+
+    rows = conn.execute("""
+        WITH base AS (
+            SELECT ws.ticker, ws.ts, me.result, ws.ask, ws.kalshi_yes_bid bid,
+                   ws.price_change_pct pct, ws.yes_depth yd, ws.no_depth nd,
+                   CAST(substr(ws.ts,12,2) AS INT) hr
+            FROM (SELECT ticker, timestamp ts, kalshi_yes_ask ask, kalshi_yes_bid,
+                         price_change_pct, yes_depth, no_depth
+                  FROM window_snapshots WHERE kalshi_yes_ask>=0.85 AND kalshi_yes_ask<1.0
+                  GROUP BY ticker) ws
+            JOIN market_events me ON ws.ticker=me.ticker
+            WHERE ws.ts >= '2026-06-01' AND ws.ts < '2026-06-22'
+        ),
+        with_prev AS (
+            SELECT *, LAG(result) OVER (ORDER BY ts) prev_result,
+                      LAG(result,2) OVER (ORDER BY ts) prev2_result
+            FROM base
+        )
+        SELECT * FROM with_prev ORDER BY ts
+    """).fetchall()
+
+    START = 200
+    FIXED = 10
+
+    trades_list = []
+    for r in rows:
+        spread = (r["ask"] - r["bid"]) if (r["bid"] and r["bid"] > 0) else 99
+        depth = (r["yd"] or 0) + (r["nd"] or 0)
+        ratio = (r["yd"] / r["nd"]) if (r["yd"] and r["nd"] and r["nd"] > 0) else 0
+        trades_list.append({
+            "pnl_per": r["ask"]-0 if r["result"]=="down" else r["ask"]-1,
+            "prev_down": r["prev_result"]=="down",
+            "best_hour": r["hr"] in (4,13,18,22),
+            "crypto_down": r["pct"] is not None and r["pct"] < 0,
+            "ask_ge_90": r["ask"] >= 0.90,
+            "wide": 0.02 < spread < 0.99 and depth >= 500,
+            "balanced": 0.5 <= ratio <= 2.0,
+            "regime_in": r["prev2_result"]=="up" and r["prev_result"]=="down",
+            "regime_out": r["prev2_result"]=="down" and r["prev_result"]=="up",
+        })
+
+    def all_mult(t):
+        m = 1.0
+        if t["prev_down"]: m += 0.5
+        if t["best_hour"]: m += 0.3
+        if t["crypto_down"]: m += 0.2
+        if t["ask_ge_90"]: m += 0.2
+        if t["wide"]: m += 0.1
+        if t["balanced"]: m += 0.1
+        if t["regime_in"]: m += 1.0
+        if t["regime_out"]: m -= 0.5
+        return max(0.5, min(m, 3.0))
+
+    baseline_bal = START; baseline_pts = [{"x": 0, "y": START}]
+    gate_bal = START; gate_pts = [{"x": 0, "y": START}]
+    mult_bal = START; mult_pts = [{"x": 0, "y": START}]
+
+    for i, t in enumerate(trades_list):
+        baseline_bal += t["pnl_per"] * FIXED
+        baseline_pts.append({"x": i + 1, "y": round(baseline_bal, 2)})
+
+        if t["prev_down"]:
+            gate_bal += t["pnl_per"] * FIXED
+        gate_pts.append({"x": i + 1, "y": round(gate_bal, 2)})
+
+        m = all_mult(t)
+        mult_bal += t["pnl_per"] * FIXED * m
+        mult_pts.append({"x": i + 1, "y": round(mult_bal, 2)})
+
+    conn.close()
+
+    return [
+        {"label": "BASELINE (all, no filters)", "data": baseline_pts, "borderColor": "#6b7280"},
+        {"label": "GATE (prev=DOWN only)", "data": gate_pts, "borderColor": "#3b82f6"},
+        {"label": "MULTIPLIER (all, scaled)", "data": mult_pts, "borderColor": "#22c55e"},
+    ]
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard() -> str:
     html_path = Path(__file__).parent / "dashboard.html"
