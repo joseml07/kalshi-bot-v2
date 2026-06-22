@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     daily_loss_limit: float = Field(default=25.0)
     max_per_trade: float = Field(default=25.0)
     max_concurrent_positions: int = Field(default=3)
+    max_contracts_per_trade: int = Field(default=10, ge=1, le=1000)
+    max_trade_cost_dollars: float = Field(default=10.0, ge=1.0)
     kelly_fraction: float = Field(default=0.25, ge=0.01, le=1.0)
 
     # Strategy selection: "momentum" (default, V2), "lwm" (legacy), "settlement_edge" (V3)

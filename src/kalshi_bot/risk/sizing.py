@@ -46,6 +46,8 @@ def kelly_size(
     fraction: float = DEFAULT_KELLY_FRACTION,
     signal_strength: SignalStrength = SignalStrength.MODERATE,
     symbol: str = "",
+    max_contracts: int = MAX_CONTRACTS,
+    max_cost_dollars: Decimal = MAX_COST_DOLLARS,
 ) -> int:
     """Compute position size using fractional-Kelly criterion.
 
@@ -87,10 +89,10 @@ def kelly_size(
     contracts = math.floor(dollar_amount / price)
 
     # Use price + 3c buffer for cost cap so the limit order (which adds
-    # a slippage buffer) doesn't exceed MAX_COST_DOLLARS on Kalshi.
+    # a slippage buffer) doesn't exceed max_cost_dollars on Kalshi.
     buffered_price = min(price + 0.03, 0.99)
-    max_by_cost = math.floor(float(MAX_COST_DOLLARS) / buffered_price)
-    contracts = min(contracts, max_by_cost, MAX_CONTRACTS)
+    max_by_cost = math.floor(float(max_cost_dollars) / buffered_price)
+    contracts = min(contracts, max_by_cost, max_contracts)
     if contracts < MIN_CONTRACTS:
         # Kelly said bet something (dollar_amount > 0) but the floor rounded
         # to zero on a small bankroll. Take the single-contract bet if it

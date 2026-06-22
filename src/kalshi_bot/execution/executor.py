@@ -18,7 +18,7 @@ from kalshi_bot.client.kalshi import KalshiClient
 from kalshi_bot.config import Settings
 from kalshi_bot.models.market import OrderBook
 from kalshi_bot.risk.manager import RiskManager
-from kalshi_bot.risk.sizing import DEFAULT_KELLY_FRACTION, kelly_size
+from kalshi_bot.risk.sizing import DEFAULT_KELLY_FRACTION, MAX_CONTRACTS, MAX_COST_DOLLARS, kelly_size
 from kalshi_bot.strategy.fees import maker_fee, taker_fee
 from kalshi_bot.strategy.asset_config import maker_timeout_for_strength
 from kalshi_bot.strategy.signals import Signal
@@ -206,6 +206,8 @@ class Executor:
         contracts = kelly_size(
             win_prob, price, bankroll, fraction=fraction,
             signal_strength=signal.signal_strength, symbol=signal.symbol,
+            max_contracts=self._settings.max_contracts_per_trade if self._settings else MAX_CONTRACTS,
+            max_cost_dollars=Decimal(str(self._settings.max_trade_cost_dollars)) if self._settings else MAX_COST_DOLLARS,
         )
         if contracts == 0:
             logger.info(
