@@ -597,6 +597,99 @@ The 30-second momentum delta is too noisy to be predictive. Price LEVEL (contrad
 
 ---
 
+## 30. FIRST-TOUCH vs RE-TOUCH (Window-Level Signal Quality)
+
+The number of times a window touches 85c+ is inversely correlated with sell edge:
+
+| Touches | N | DOWN WR | Avg P&L | Interpretation |
+|---|---|---|---|---|
+| **1 (first touch only)** | 48 | **81.3%** | **$0.69** | YES spikes once then crashes — moneymaker |
+| **2** | 33 | **75.8%** | **$0.63** | Brief rally then collapse |
+| 3-5 | 119 | 51.3% | $0.39 | Choppy but still winnable |
+| 6+ | 1,664 | 14.7% | $0.003 | YES stays elevated — don't sell here |
+
+**The more times price touches 85c+, the lower the edge.** Frequent touches mean sustained bullish pressure — the market is right, we're wrong. Single-touch windows are brief spikes that immediately crash.
+
+**Implementation**: Track touch count within a window. Only sell on the FIRST touch. If price dips below 85c and comes back, skip — the edge has degraded from 81% to 15%.
+
+---
+
+## 31. MAXIMUM FAVORABLE EXCURSION & STOP-LOSS ANALYSIS
+
+For SELL>=85c, how high does YES rally after entry?
+
+| Max YES Rally | N | DOWN WR | Avg P&L | With Stop @ 92c |
+|---|---|---|---|---|
+| **Barely moved (<88c)** | 79 | **96.2%** | **$0.81** | $0.81 (no stop hit) |
+| Modest rally (88-92c) | 84 | 90.5% | $0.76 | $0.76 (no stop hit) |
+| Big rally (92-96c) | 94 | 87.2% | $0.73 | **-$0.07** (stopped out!) |
+| Massive rally (96c+) | 1,607 | 8.4% | -$0.06 | **-$0.07** (stopped out) |
+
+**A 92c stop-loss DESTROYS the edge.** The 92-96c band has 87.2% DOWN WR — most of those windows that hit 92c still resolve DOWN. Stopping out there converts winners into losers.
+
+**The only viable stop is 95c+** — but even there, you'd lose 7c on the 1,607 massive-rally windows vs the -6c they'd average without a stop. The math says: **no stop-loss. Hold to settlement.**
+
+---
+
+## 32. TRADE RESULT AUTOCORRELATION (Regime Clustering)
+
+SELL>=85c trade results are NOT independent — they exhibit strong positive autocorrelation:
+
+| Previous 2 Trades | N | Next WR | Next Avg |
+|---|---|---|---|
+| **LOSS → WIN** | 237 | **42.2%** | **$0.29** |
+| WIN → WIN | 132 | 24.2% | $0.11 |
+| LOSS → LOSS | 1,257 | 16.4% | $0.03 |
+| WIN → LOSS | 236 | 13.1% | $0.00 |
+
+**This is regime-switching behavior.** The market alternates between sell-friendly and sell-hostile regimes. The transition signal:
+- **LOSS→WIN (regime entry)**: SIZE UP 2x. You just entered a sell-friendly regime.
+- **WIN→LOSS (regime exit)**: REDUCE to 25% or pause. The regime just turned hostile.
+- **LOSS→LOSS (hostile regime)**: Size down to 50%. Wait for a WIN signal.
+
+This is NOT the prev-DOWN filter in disguise — the 2-trade streak adds signal BEYOND the single previous window. The LOSS→WIN sequence (42.2% WR) significantly outperforms prev-DOWN alone (35.8% WR).
+
+---
+
+## 33. SESSION ANALYSIS (Overnight vs US)
+
+| Session | N | WR | Avg P&L |
+|---|---|---|---|
+| Overnight (0-11 UTC) | 1,797 | 20.2% | $0.071 |
+| US Session (12-23 UTC) | 1,812 | 21.6% | $0.083 |
+
+The edge works around the clock. US session has a marginal 1.4% WR advantage. Not meaningful enough to gate on — the strategy trades 24/7 profitably.
+
+---
+
+## 34. ORDERBOOK SHAPE & MARKET QUALITY
+
+| Market Quality | N | WR | Avg P&L |
+|---|---|---|---|
+| **Wide spread + deep book** | 626 | 21.9% | **$0.086** |
+| Tight spread + deep book | 1,237 | 18.8% | $0.057 |
+
+Counterintuitive: wider spreads signal BETTER edge. Wide spread = market makers uncertain = more mispricing = more profit for us. When the spread is tight, the market is confident and the edge shrinks. Wide spread is NOT a reason to skip — it's a reason to size UP.
+
+---
+
+## 35. FILTERS AS MULTIPLIERS (Alternative to Hard Gates)
+
+Instead of gating (skip entirely if condition not met), scale position size:
+
+| Condition | Edge Premium | Suggested Multiplier |
+|---|---|---|
+| prev=DOWN | +$0.157 (3.4x) | +0.5x |
+| Best hours (4,13,18,22) | +$0.073 (2.1x) | +0.3x |
+| Crypto DOWN | +$0.068 (2.0x) | +0.2x |
+| Ask >= 90c | +$0.045 (1.7x) | +0.2x |
+| Wide spread + deep | +$0.019 (1.3x) | +0.1x |
+| Balanced depth | +$0.022 (1.3x) | +0.1x |
+
+Formula: `contracts = base_kelly × min(1.0 + sum(multipliers), 2.5)`. Caps at 2.5x. Captures edge premium without sacrificing signal volume.
+
+---
+
 ## 12. OPEN QUESTIONS
 
 1. **What caused the May 23 regime change?** Was it a Kalshi liquidity change, crypto volatility shift, or model drift?
