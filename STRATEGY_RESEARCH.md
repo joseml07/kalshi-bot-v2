@@ -690,6 +690,54 @@ Formula: `contracts = base_kelly × min(1.0 + sum(multipliers), 2.5)`. Caps at 2
 
 ---
 
+## 36. MOMENTUM AT ENTRY (Crypto TA Signal)
+
+Crypto momentum direction at the moment we sell YES >= 85c strongly predicts edge quality:
+
+| Momentum | N | DOWN WR | Avg P&L |
+|---|---|---|---|
+| **No data (stale)** | 32 | 46.9% | **$0.36** |
+| Weak DOWN | 136 | 29.4% | $0.16 |
+| Weak UP | 1,544 | 21.7% | $0.08 |
+| Strong UP (>0.05%) | 1,883 | 19.3% | $0.06 |
+| Flat | 17 | 11.8% | $0.00 |
+
+Selling when crypto has strong upward momentum is fighting the trend — worst edge. Selling when momentum is weak/down yields better results. Stale momentum (no data) has the highest WR but tiny sample. **Add to multiplier: +0.2x if weak DOWN, -0.2x if strong UP.**
+
+---
+
+## 37. OPTIMAL ENTRY TIMING (Seconds Remaining)
+
+The edge per trade improves dramatically as expiry approaches:
+
+| Time Window | N (snapshots) | DOWN WR | Avg P&L |
+|---|---|---|---|
+| T>10m | 15,940 | 16.2% | $0.057 |
+| T-10m | 76,038 | 11.0% | $0.032 |
+| T-5m | 60,205 | 9.9% | $0.046 |
+| T-120s | 13,278 | 13.6% | $0.089 |
+| **T-60s** | 3,614 | 23.8% | **$0.190** |
+| **T-30s** | 1,703 | 27.9% | **$0.221** |
+
+The Kalshi market becomes LESS efficient as expiry approaches. T-30s has the best edge but fewest signals. T-60s is the volume/edge sweet spot. **Add to multiplier: +0.1x if entering at T-60s or closer.**
+
+---
+
+## 38. KELLY FRACTION OPTIMIZATION
+
+At 35.8% WR with 6.4:1 payoff, full Kelly = 25.8% of bankroll:
+
+| Fraction | Risk/Trade | Growth/Unit | Prob of 50% DD |
+|---|---|---|---|
+| Eighth (3.2%) | $2.56 | 1.048 | 0.00% (24 losses) |
+| **Quarter (6.5%)** | $5.12 | **1.085** | 0.58% (12 losses) |
+| Third (8.6%) | $6.88 | 1.105 | 2.19% (9 losses) |
+| Half (12.9%) | $10.32 | 1.136 | 8.25% (6 losses) |
+
+**Quarter-Kelly (current, 6.5%) is optimal.** Third-Kelly only adds 2% growth but 4x the halving risk. Half-Kelly is reckless — 8.25% chance of halving your account on any 6-trade streak.
+
+---
+
 ## 12. OPEN QUESTIONS
 
 1. **What caused the May 23 regime change?** Was it a Kalshi liquidity change, crypto volatility shift, or model drift?
