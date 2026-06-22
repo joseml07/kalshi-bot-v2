@@ -742,6 +742,7 @@ async def _fast_eval_loop(
     """Event-driven strategy evaluation loop (no REST reads on hot path)."""
     last_eval_mono: dict[str, float] = {}
     last_risk_block: dict[str, str] = {}
+    settlement_edge_traded: set[str] = set()  # re-entry prevention
     _was_offpeak: bool | None = None
 
     def _record_reason(
@@ -1150,6 +1151,20 @@ async def _fast_eval_loop(
                                 f"prior_went_up={prior_result.went_up} signal_side={signal.side.value} "
                                 f"price={signal.kalshi_price}",
                             )
+
+                    # Settlement edge re-entry prevention: one trade per ticker per window.
+                    # The snapshot data shows re-entering the same window degrades edge
+                    # (Section 30: first-touch 81% WR vs re-touch 15% WR).
+                    if signal.strategy.value == "settlement_edge":
+                        if ticker in settlement_edge_traded:
+                            executor.log_signal(
+                                signal, "skip_reentry",
+                                f"ticker={ticker} already traded this window",
+                            )
+                            _bump_counter(signal_counters, "skip_reentry")
+                            _record_reason(symbol, ticker, "skip_reentry")
+                            continue
+                        settlement_edge_traded.add(ticker)
 
                     submit_result = await executor.submit(signal, cached.balance)
                     if submit_result.order is not None:
