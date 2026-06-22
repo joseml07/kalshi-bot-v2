@@ -251,6 +251,12 @@ class CachedState:
         self._markets: dict[str, Market] = {}
         self._markets_refreshed_mono = 0.0
         self.active_symbols: set[str] = set()
+        self._paper_balance_seeded: bool = False
+
+    def update_balance(self, delta: Decimal) -> None:
+        """Apply P&L delta to the tracked balance (paper growing mode)."""
+        self.balance += delta
+        self._balance_refreshed_mono = time.monotonic()
 
     async def refresh_balance(
         self,
@@ -540,6 +546,16 @@ async def run_bot(settings: Settings) -> None:
     if dry_run:
         if settings.bankroll_override > 0:
             _bankroll_sim = Decimal(str(settings.bankroll_override))
+        elif settings.settlement_edge_grow_balance:
+            # Seed paper balance from real Kalshi balance on first boot,
+            # then let it grow/shrink independently with P&L.
+            try:
+                real_balance = await client.get_balance()
+                _bankroll_sim = real_balance
+                logger.info("paper_balance_seeded_from_live", balance=str(real_balance))
+            except Exception:
+                logger.warning("paper_balance_seed_failed", fallback=str(settings.paper_balance))
+                _bankroll_sim = Decimal(str(settings.paper_balance))
         else:
             _bankroll_sim = Decimal(str(settings.paper_balance))
     elif settings.bankroll_override > 0:
@@ -549,6 +565,7 @@ async def run_bot(settings: Settings) -> None:
         ttl_s=0.0,
         simulated_balance=_bankroll_sim,
     )
+    cached._paper_balance_seeded = True
     if not dry_run and _bankroll_sim is None and cached.balance <= 0:
         logger.critical(
             "live_mode_zero_balance — refusing to start. "
@@ -861,6 +878,8 @@ async def _fast_eval_loop(
                             allowed_hours = [
                                 int(h.strip()) for h in settings.settlement_edge_allowed_hours.split(",") if h.strip()
                             ] or None
+                        prev_result = tracker.get_previous_result(symbol)
+                        prev_went_up = prev_result.went_up if prev_result is not None else None
                         signal = evaluate_settlement_edge(
                             window,
                             ticker,
@@ -872,6 +891,8 @@ async def _fast_eval_loop(
                             allowed_hours=allowed_hours,
                             require_crypto_down=settings.settlement_edge_require_crypto_down,
                             crypto_down_threshold=settings.settlement_edge_crypto_down_threshold,
+                            require_prev_down=settings.settlement_edge_require_prev_down,
+                            prev_window_went_up=prev_went_up,
                             min_total_depth=settings.settlement_edge_min_depth,
                             max_spread=settings.settlement_edge_max_spread,
                             maker_first=False,  # settlement edge always taker
@@ -1240,21 +1261,26 @@ async def _slow_housekeeping_loop(
                     )
 
             if executor._dry_run:
-                await _settle_paper_positions(executor, tracker, alerter)
+                await _settle_paper_positions(executor, tracker, alerter, cached)
             await _check_settlements(client, executor, alerter)
 
             _br_sim: Decimal | None = None
             if settings.trading_mode == "paper":
-                if settings.bankroll_override > 0:
+                if settings.settlement_edge_grow_balance:
+                    # Growing mode: don't reset balance from config.
+                    # Balance is tracked live via update_balance() after settlements.
+                    _br_sim = None  # skip refresh, keep tracked balance
+                elif settings.bankroll_override > 0:
                     _br_sim = Decimal(str(settings.bankroll_override))
                 else:
                     _br_sim = Decimal(str(settings.paper_balance))
             elif settings.bankroll_override > 0:
                 _br_sim = Decimal(str(settings.bankroll_override))
-            await cached.refresh_balance(
-                client,
-                simulated_balance=_br_sim,
-            )
+            if _br_sim is not None:
+                await cached.refresh_balance(
+                    client,
+                    simulated_balance=_br_sim,
+                )
             # Safety switch removed — off-hours gating + 0.25 kelly is sufficient
             await cached.refresh_positions(client, risk)
             await cached.refresh_markets(client, tracker, settings)
@@ -1911,6 +1937,7 @@ async def _settle_paper_positions(
     executor: Executor,
     tracker: WindowTracker,
     alerter: AlerterLike,
+    cached: CachedState | None = None,
 ) -> None:
     for order in list(executor.filled_orders):
         symbol = order.signal.symbol
@@ -1934,6 +1961,9 @@ async def _settle_paper_positions(
                     total_pnl += settled.pnl
             won = total_pnl > 0
             await alerter.trade_settled(order.signal.ticker, won, total_pnl)
+            # Grow paper balance with realized P&L
+            if cached is not None and cached._paper_balance_seeded:
+                cached.update_balance(total_pnl)
 
 
 async def _run_window_analysis(

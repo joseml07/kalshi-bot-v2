@@ -38,6 +38,8 @@ def evaluate_settlement_edge(
     allowed_hours: list[int] | None = None,
     require_crypto_down: bool = False,
     crypto_down_threshold: float = -0.001,
+    require_prev_down: bool = False,
+    prev_window_went_up: bool | None = None,
     min_total_depth: int = 100,
     max_spread: float = 0.03,
     maker_first: bool = False,
@@ -73,6 +75,14 @@ def evaluate_settlement_edge(
         pct = window.price_change_pct
         if pct > crypto_down_threshold:  # Not down enough
             return None
+
+    # Previous-window filter: only sell after a DOWN window
+    # Data shows prev DOWN -> 35.8% WR (3.2x baseline edge)
+    if require_prev_down:
+        if prev_window_went_up is None:
+            return None  # no previous window data yet
+        if prev_window_went_up:
+            return None  # previous window was UP, skip
 
     # Price gate — only sell expensive YES
     taker_price = orderbook.best_yes_ask
