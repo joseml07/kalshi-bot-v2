@@ -391,11 +391,14 @@ def _get_session_start(conn: sqlite3.Connection) -> str | None:
 
 
 def make_status_command(
-    risk_manager: Any, executor: Any, client: Any, settings: Any
+    risk_manager: Any, executor: Any, client: Any, settings: Any, cached: Any = None
 ) -> CommandBuilder:
     async def handler() -> str:
         if settings.trading_mode == "paper":
-            balance: Any = f"{settings.paper_balance:.2f}"
+            if cached is not None:
+                balance: Any = f"{cached.balance:.2f}"
+            else:
+                balance: Any = f"{settings.paper_balance:.2f}"
         else:
             try:
                 balance = await client.get_balance()
@@ -427,9 +430,11 @@ def make_pnl_command(risk_manager: Any) -> CommandBuilder:
     return handler
 
 
-def make_balance_command(client: Any, settings: Any) -> CommandBuilder:
+def make_balance_command(client: Any, settings: Any, cached: Any = None) -> CommandBuilder:
     async def handler() -> str:
         if settings.trading_mode == "paper":
+            if cached is not None:
+                return f"**Balance**\n${cached.balance:.2f}"
             return f"**Balance**\n${settings.paper_balance:.2f}"
         try:
             balance = await client.get_balance()

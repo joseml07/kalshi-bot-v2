@@ -347,10 +347,13 @@ class TelegramAlerter:
         await self._client.aclose()
 
 
-def make_status_command(risk_manager: Any, executor: Any, client: Any, settings: Any) -> CommandHandler:
+def make_status_command(risk_manager: Any, executor: Any, client: Any, settings: Any, cached: Any = None) -> CommandHandler:
     async def handler() -> str:
         if settings.trading_mode == "paper":
-            balance: Any = f"{settings.paper_balance:.2f}"
+            if cached is not None:
+                balance: Any = f"{cached.balance:.2f}"
+            else:
+                balance = f"{settings.paper_balance:.2f}"
         else:
             try:
                 balance = await client.get_balance()
@@ -384,9 +387,11 @@ def make_pnl_command(risk_manager: Any) -> CommandHandler:
     return handler
 
 
-def make_balance_command(client: Any, settings: Any) -> CommandHandler:
+def make_balance_command(client: Any, settings: Any, cached: Any = None) -> CommandHandler:
     async def handler() -> str:
         if settings.trading_mode == "paper":
+            if cached is not None:
+                return f"<b>Balance</b>\n${cached.balance:.2f}"
             return f"<b>Balance</b>\n${settings.paper_balance:.2f}"
         try:
             balance = await client.get_balance()

@@ -410,10 +410,11 @@ def _register_commands(
     client: KalshiClient,
     settings: Settings,
     tracker: WindowTracker,
+    cached: CachedState,
 ) -> None:
-    alerter.register("status", make_status_command(risk, executor, client, settings))
+    alerter.register("status", make_status_command(risk, executor, client, settings, cached))
     alerter.register("pnl", make_pnl_command(risk))
-    alerter.register("balance", make_balance_command(client, settings))
+    alerter.register("balance", make_balance_command(client, settings, cached))
     alerter.register("positions", make_positions_command(client))
     alerter.register("trades", make_trades_command())
     alerter.register("kill", make_kill_command())
@@ -441,12 +442,13 @@ def _register_discord_commands(
     client: KalshiClient,
     settings: Settings,
     tracker: WindowTracker,
+    cached: CachedState,
 ) -> None:
     alerter.register(
-        "status", make_discord_status_command(risk, executor, client, settings)
+        "status", make_discord_status_command(risk, executor, client, settings, cached)
     )
     alerter.register("pnl", make_discord_pnl_command(risk))
-    alerter.register("balance", make_discord_balance_command(client, settings))
+    alerter.register("balance", make_discord_balance_command(client, settings, cached))
     alerter.register("positions", make_discord_positions_command(client))
     alerter.register("trades", make_discord_trades_command())
     alerter.register("kill", make_discord_kill_command())
@@ -530,9 +532,9 @@ async def run_bot(settings: Settings) -> None:
 
     for a in alerter.alerters:
         if isinstance(a, TelegramAlerter):
-            _register_commands(a, risk, executor, client, settings, tracker)
+            _register_commands(a, risk, executor, client, settings, tracker, cached)
         elif isinstance(a, DiscordBotAlerter):
-            _register_discord_commands(a, risk, executor, client, settings, tracker)
+            _register_discord_commands(a, risk, executor, client, settings, tracker, cached)
 
     price_queue: asyncio.Queue[PriceTick] = asyncio.Queue(maxsize=500)
     eval_trigger = asyncio.Event()
