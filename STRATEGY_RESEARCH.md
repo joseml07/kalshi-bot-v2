@@ -467,6 +467,66 @@ Windows where crypto direction flips in the last 2 minutes:
 
 ---
 
+## 21. THE PREVIOUS-WINDOW FILTER (Persistence / Reversal)
+
+The single most powerful filter found: **previous window's result**.
+
+### SELL>=85c by Previous Window (June 2026)
+| Previous Window | N | WR | Avg P&L | Total P&L |
+|---|---|---|---|---|
+| **DOWN** | 369 | 35.8% | **$0.223** | +$82.44 |
+| UP | 1,501 | 15.8% | $0.027 | +$40.77 |
+
+When previous window was DOWN, selling expensive YES is **8.2x more profitable** than when previous window was UP. This suggests mean-reversion at the window-to-window level: after a DOWN window, the market overprices the next reversal, creating larger selling opportunities.
+
+### Sequential Triple Filter (June)
+| Filter | N | WR | Avg P&L | Multiplier |
+|---|---|---|---|---|
+| Baseline (all) | 1,859 | 19.8% | $0.067 | 1.0x |
+| Prev DOWN only | 369 | 35.8% | $0.212 | 3.2x |
+| **Prev DOWN + Best Hrs** | **74** | **40.5%** | **$0.270** | **4.0x** |
+
+---
+
+## 22. THE 50c CONTRADICTION (T-60s Mid-Price Edge)
+
+At T-60s, contracts priced near 50c (uncertainty) combined with clear crypto direction create massive edge:
+
+| Crypto Dir | N | Kalshi | WR | Trade | Avg P&L |
+|---|---|---|---|---|---|
+| **UP** | 505 | 45-55c | **91.7% UP** | BUY YES | **$0.418** |
+| **DOWN** | 84 | 45-55c | **71.4% DOWN** | SELL YES | **$0.216** |
+
+This is the contradiction principle in its purest form: crypto has already moved directionally, but the Kalshi market is still pricing the contract at 50/50. The market is lagging the information by 60+ seconds.
+
+Combined: 589 trades, ~$236 total P&L, avg $0.40/trade.
+
+---
+
+## 23. VOLATILITY CLUSTERING & EDGE QUALITY
+
+After a LOW volatility previous window, the SELL>=85c edge IMPROVES:
+
+| Previous Vol | N | WR | Avg P&L |
+|---|---|---|---|
+| **Low (<0.2%)** | 1,372 | 20.3% | **$0.072** |
+| Medium (0.2-0.5%) | 453 | 18.5% | $0.053 |
+| High (>0.5%) | 45 | 13.3% | $0.003 |
+
+After calm markets, overpriced YES contracts are more likely to resolve DOWN (reversal). After volatile markets, the trend continues (momentum dominates).
+
+---
+
+## 24. OPEN DRIVE (First 60 Seconds)
+
+First 60s crypto direction DOES predict final outcome, but the market prices it in:
+- First 60s UP >0.2%: 264 windows, 74.2% UP WR, avg YES ask = 76.4c
+- At 76.4c, implied UP probability = 76.4%, actual = 74.2% → edge = -2.2% (LOSING)
+
+The market efficiently prices the open drive. No edge in simply following it. The edge comes from the LAG between crypto reality and Kalshi repricing.
+
+---
+
 ## 12. OPEN QUESTIONS
 
 1. **What caused the May 23 regime change?** Was it a Kalshi liquidity change, crypto volatility shift, or model drift?
