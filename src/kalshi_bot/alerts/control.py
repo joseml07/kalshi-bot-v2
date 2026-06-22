@@ -25,6 +25,15 @@ _SETTABLE: dict[str, tuple[str, type]] = {
     "max_concurrent_positions": ("max_concurrent_positions", int),
     "paper_balance": ("paper_balance", float),
     "yes_side_disabled": ("yes_side_disabled", bool),
+    # Settlement edge
+    "strategy_name": ("strategy_name", str),
+    "settlement_edge_sell_threshold": ("settlement_edge_sell_threshold", float),
+    "settlement_edge_use_multiplier": ("settlement_edge_use_multiplier", bool),
+    "settlement_edge_require_prev_down": ("settlement_edge_require_prev_down", bool),
+    "settlement_edge_grow_balance": ("settlement_edge_grow_balance", bool),
+    "settlement_edge_kelly_win_rate": ("settlement_edge_kelly_win_rate", float),
+    "max_contracts_per_trade": ("max_contracts_per_trade", int),
+    "max_trade_cost_dollars": ("max_trade_cost_dollars", float),
 }
 
 
