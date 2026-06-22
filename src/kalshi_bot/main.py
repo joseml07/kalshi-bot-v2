@@ -897,6 +897,7 @@ async def _fast_eval_loop(
                             prev_window_went_up=prev_went_up,
                             min_total_depth=settings.settlement_edge_min_depth,
                             max_spread=settings.settlement_edge_max_spread,
+                            kelly_win_rate=settings.settlement_edge_kelly_win_rate,
                             maker_first=False,  # settlement edge always taker
                         )
                     else:

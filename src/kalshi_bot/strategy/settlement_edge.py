@@ -45,6 +45,7 @@ def evaluate_settlement_edge(
     maker_first: bool = False,
     contracts: int = 1,
     k: float = 150.0,
+    kelly_win_rate: float = 0.0,
 ) -> Signal | None:
     """Evaluate sell-expensive-YES settlement edge.
 
@@ -142,6 +143,12 @@ def evaluate_settlement_edge(
     if net_edge >= 0.08:
         strength = SignalStrength.STRONG
 
+    # Kelly sizing: use empirical win rate if configured, else model estimate
+    if kelly_win_rate > 0:
+        kelly_real_prob = 1.0 - kelly_win_rate  # win_prob for NO = DOWN WR
+    else:
+        kelly_real_prob = up_prob  # fallback to model
+
     return Signal(
         timestamp=datetime.now(timezone.utc),
         strategy=StrategyName.SETTLEMENT_EDGE,
@@ -151,7 +158,7 @@ def evaluate_settlement_edge(
         edge=Decimal(str(round(raw_edge, 6))),
         net_edge=Decimal(str(round(net_edge, 6))),
         kalshi_price=Decimal(str(entry_price)),
-        real_prob=up_prob,
+        real_prob=kelly_real_prob,
         seconds_remaining=seconds_remaining,
         contracts=contracts,
         route="taker",

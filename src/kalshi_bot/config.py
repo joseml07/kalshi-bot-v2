@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     settlement_edge_crypto_down_threshold: float = Field(default=-0.001)
     settlement_edge_require_prev_down: bool = Field(default=True)
     settlement_edge_grow_balance: bool = Field(default=True)
+    settlement_edge_kelly_win_rate: float = Field(
+        default=0.358,
+        ge=0.0, le=1.0,
+        description="Empirical win rate for Kelly sizing. 0 = use model estimate. Default 0.358 = 35.8%% prev-DOWN WR.",
+    )
     settlement_edge_min_depth: int = Field(default=100)
     settlement_edge_max_spread: float = Field(default=0.03)
     settlement_edge_higher_edge_threshold: float = Field(default=0.02)
