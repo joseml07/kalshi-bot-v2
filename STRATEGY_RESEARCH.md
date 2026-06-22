@@ -527,6 +527,76 @@ The market efficiently prices the open drive. No edge in simply following it. Th
 
 ---
 
+## 25. SIGNAL STRENGTH BY ENTRY PRICE (SELL>=85c)
+
+Higher entry prices = higher edge per trade. The market charges more premium for being wrong.
+
+| Entry Band | N | Avg Entry | DOWN WR | **Avg P&L** | Total P&L |
+|---|---|---|---|---|---|
+| 85-88c | 2,676 | 85.7c | 20.7% | **$0.063** | +$169.58 |
+| 88-90c | 512 | 88.4c | 21.5% | **$0.099** | +$50.66 |
+| 90-95c | 333 | 91.3c | 22.2% | **$0.136** | +$45.18 |
+| 95-99c | 84 | 96.7c | 19.0% | **$0.157** | +$13.19 |
+
+A 95c entry has 2.5x the edge of an 85c entry ($0.157 vs $0.063). You can SIZE UP on higher entries because the risk/reward improves. At 95c you risk 5c to win 95c (19:1), while at 85c you risk 15c to win 85c (5.7:1).
+
+---
+
+## 26. SETTLEMENT CASCADE (T-60s → T-10s Price Convergence)
+
+How contracts converge in the final 50 seconds — and where the edge lives:
+
+| T-60s Band | N | Avg T-60s | Avg T-10s | Drift | % Converge | Final UP WR |
+|---|---|---|---|---|---|---|
+| 0-10c | 484 | 3.7c | 6.0c | +2.3c | 38.6% | 38.2% |
+| 10-30c | 734 | 21.1c | 20.7c | -0.3c | 18.3% | 73.8% |
+| 30-50c | 990 | 40.5c | 39.8c | -0.7c | 9.6% | 82.8% |
+| 50-70c | 893 | 59.8c | 59.3c | -0.5c | 6.2% | 85.0% |
+| 70-85c | 360 | 77.1c | 75.9c | -1.2c | 12.8% | 78.3% |
+| **85-95c** | 186 | 91.1c | 91.1c | **0.0c** | 28.5% | 68.8% |
+| 95-100c | 370 | 99.2c | 97.0c | -2.1c | 24.9% | 84.3% |
+
+**The 85-95c band STALLS in the final minute.** Price barely moves (avg drift 0.0c). The market freezes at this level — contracts that should be at 99c or 1c stay suspended at 90c. This is where our edge lives: the 31.2% that resolve DOWN from 85-95c despite the market refusing to reprice them.
+
+---
+
+## 27. THE BUY LEG — Completing the Pair
+
+When NOT selling expensive YES, we can BUY cheap YES as a complementary strategy:
+
+| Crypto Dir | N | Avg Ask | UP WR | Avg Buy P&L | Total P&L |
+|---|---|---|---|---|---|
+| **FLAT** | 3,363 | 12.9c | 20.0% | **$0.071** | **+$237.34** |
+| UP | 11 | 9.8c | 63.6% | $0.538 | +$5.92 |
+| DOWN | 3,161 | 13.3c | 13.6% | $0.004 | +$11.64 |
+
+**Buy YES <= 15c when crypto is FLAT:** 3,363 trades, $237 P&L. Combined with SELL>=85c ($278 P&L), the pair generates $515 all-time across 6,955 trades. Two uncorrelated legs that rarely trigger simultaneously.
+
+---
+
+## 28. DEPTH EXHAUSTION — When the Crowd is Right
+
+Orderbook depth is CONTRARIAN to intuition. More sellers ≠ better opportunity.
+
+| Depth Signal | N | Avg Ask | DOWN WR | Avg Sell P&L |
+|---|---|---|---|---|
+| YES deep ≥ 3:1 (crowd selling) | 1,137 | 96.1c | 9.6% | $0.057 |
+| **Balanced** | 226 | 91.2c | **21.2%** | **$0.124** |
+
+When the YES book is deep (crowd is selling YES), DOWN only wins 9.6% — the crowd is RIGHT. When the book is balanced at 85c+, DOWN wins 21.2% with $0.124/trade (1.8x baseline). **Trade when the crowd is UNCERTAIN, not when they agree.**
+
+---
+
+## 29. CRYPTO ACCELERATION — Deceleration ≠ Reversal
+
+Second derivative of crypto price does NOT predict window outcome:
+- Accelerating UP: 51.1% UP WR (coinflip)
+- Steady: 49.1% UP WR
+
+The 30-second momentum delta is too noisy to be predictive. Price LEVEL (contradiction) matters far more than price VELOCITY.
+
+---
+
 ## 12. OPEN QUESTIONS
 
 1. **What caused the May 23 regime change?** Was it a Kalshi liquidity change, crypto volatility shift, or model drift?
