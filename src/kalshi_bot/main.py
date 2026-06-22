@@ -896,6 +896,7 @@ async def _fast_eval_loop(
                             crypto_down_threshold=settings.settlement_edge_crypto_down_threshold,
                             require_prev_down=settings.settlement_edge_require_prev_down,
                             prev_window_went_up=prev_went_up,
+                            use_multiplier=settings.settlement_edge_use_multiplier,
                             min_total_depth=settings.settlement_edge_min_depth,
                             max_spread=settings.settlement_edge_max_spread,
                             kelly_win_rate=settings.settlement_edge_kelly_win_rate,

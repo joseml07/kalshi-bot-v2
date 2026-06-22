@@ -49,3 +49,4 @@ class Signal(BaseModel):
     taker_price: Decimal | None = None
     reason: str = ""
     signal_strength: SignalStrength = SignalStrength.MODERATE
+    sizing_multiplier: float = 1.0

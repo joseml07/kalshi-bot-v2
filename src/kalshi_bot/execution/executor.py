@@ -209,6 +209,10 @@ class Executor:
             max_contracts=self._settings.max_contracts_per_trade if self._settings else MAX_CONTRACTS,
             max_cost_dollars=Decimal(str(self._settings.max_trade_cost_dollars)) if self._settings else MAX_COST_DOLLARS,
         )
+        # Apply settlement edge sizing multiplier
+        mult = getattr(signal, 'sizing_multiplier', 1.0)
+        if mult != 1.0:
+            contracts = max(1, int(contracts * mult))
         if contracts == 0:
             logger.info(
                 "submit_sizing_zero",

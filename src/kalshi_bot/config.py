@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     settlement_edge_crypto_down_threshold: float = Field(default=-0.001)
     settlement_edge_require_prev_down: bool = Field(default=True)
     settlement_edge_grow_balance: bool = Field(default=True)
+    settlement_edge_use_multiplier: bool = Field(default=False)
     settlement_edge_kelly_win_rate: float = Field(
         default=0.358,
         ge=0.0, le=1.0,
