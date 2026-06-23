@@ -150,24 +150,31 @@ def evaluate_settlement_edge(
 
     # Compute sizing multiplier from edge conditions
     sizing_mult = 1.0
+    mult_reasons: list[str] = []
     if use_multiplier:
         if prev_window_went_up is False:  # prev was DOWN
             sizing_mult += 0.5
+            mult_reasons.append("prevD+0.5")
         if allowed_hours and datetime.now(timezone.utc).hour in allowed_hours:
             sizing_mult += 0.3
+            mult_reasons.append("hour+0.3")
         if window.price_change_pct is not None and window.price_change_pct < 0:
             sizing_mult += 0.2
+            mult_reasons.append("cryptoD+0.2")
         if float(taker_price) >= 0.90:
             sizing_mult += 0.2
+            mult_reasons.append("ask90+0.2")
         if orderbook.best_yes_bid is not None:
             spread = float(taker_price) - float(orderbook.best_yes_bid)
             if spread > 0.02 and orderbook.total_depth >= 500:
                 sizing_mult += 0.1
+                mult_reasons.append("wide+0.1")
         yes_vol = sum(lv.quantity for lv in orderbook.yes_levels) if orderbook.yes_levels else 0
         no_vol = sum(lv.quantity for lv in orderbook.no_levels) if orderbook.no_levels else 0
         ratio = yes_vol / no_vol if no_vol > 0 else 0
         if 0.5 <= ratio <= 2.0:
             sizing_mult += 0.1
+            mult_reasons.append("bal+0.1")
         sizing_mult = max(0.5, min(sizing_mult, 3.0))
 
     # Kelly sizing: use empirical win rate if configured, else model estimate
@@ -190,7 +197,7 @@ def evaluate_settlement_edge(
         contracts=contracts,
         route="taker",
         taker_price=Decimal(str(entry_price)),
-        reason=f"settlement_edge sell_yes>={sell_threshold} net_edge={net_edge:.4f} mult={sizing_mult:.1f}x",
+        reason=f"settlement_edge sell_yes>={sell_threshold} net_edge={net_edge:.4f} mult={sizing_mult:.1f}x" + (f" [{','.join(mult_reasons)}]" if mult_reasons else ""),
         signal_strength=strength,
         sizing_multiplier=sizing_mult,
     )
