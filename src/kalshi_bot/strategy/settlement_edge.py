@@ -10,7 +10,7 @@ Based on exhaustive data analysis (STRATEGY_RESEARCH.md):
 
 from __future__ import annotations
 
-import logging
+import structlog
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -23,7 +23,7 @@ from kalshi_bot.strategy.fees import taker_fee
 from kalshi_bot.strategy.probability import estimate_up_probability
 from kalshi_bot.strategy.signals import Side, Signal, StrategyName
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 def evaluate_settlement_edge(
@@ -102,8 +102,8 @@ def evaluate_settlement_edge(
     # Depth gate
     if orderbook.total_depth < min_total_depth:
         logger.debug(
-            "settlement_edge_depth_gate ticker=%s depth=%d min=%d",
-            ticker, orderbook.total_depth, min_total_depth,
+            "settlement_edge_depth_gate",
+            ticker=ticker, depth=orderbook.total_depth, min_depth=min_total_depth,
         )
         return None
 
@@ -112,8 +112,8 @@ def evaluate_settlement_edge(
         spread = float(taker_price) - float(orderbook.best_yes_bid)
         if spread > max_spread:
             logger.debug(
-                "settlement_edge_spread_gate ticker=%s spread=%.4f max=%.2f",
-                ticker, spread, max_spread,
+                "settlement_edge_spread_gate",
+                ticker=ticker, spread=round(spread, 4), max_spread=max_spread,
             )
             return None
 
