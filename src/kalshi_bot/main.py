@@ -1282,7 +1282,7 @@ async def _slow_housekeeping_loop(
 
             if executor._dry_run:
                 await _settle_paper_positions(executor, tracker, alerter, cached)
-            await _check_settlements(client, executor, alerter)
+            await _check_settlements(client, executor, alerter, cached)
 
             _br_sim: Decimal | None = None
             if settings.trading_mode == "paper":
@@ -1752,6 +1752,7 @@ async def _check_settlements(
     client: KalshiClient,
     executor: Executor,
     alerter: AlerterLike,
+    cached: CachedState | None = None,
 ) -> None:
     tickers = executor.active_tickers
     for ticker in tickers:
@@ -1773,6 +1774,13 @@ async def _check_settlements(
             won = total_pnl > 0
             await alerter.trade_settled(ticker, won, total_pnl)
             await _emit_risk_events(alerter, risk_events)
+        # Update cached balance for Kelly sizing
+        if cached is not None and cached._paper_balance_seeded:
+            total_pnl = Decimal("0")
+            for order in executor.settled_orders:
+                if order.signal.ticker == ticker and order.pnl is not None:
+                    total_pnl += order.pnl
+            cached.update_balance(total_pnl)
 
 
 async def _evaluate_exits(

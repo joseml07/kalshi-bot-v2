@@ -99,14 +99,6 @@ def evaluate_settlement_edge(
     if float(taker_price) > max_sell_threshold:
         return None
 
-    logger.info(
-        "settlement_edge_signal",
-        ticker=ticker,
-        yes_ask=float(taker_price),
-        secs=seconds_remaining,
-        depth=orderbook.total_depth,
-    )
-
     # Depth gate
     if orderbook.total_depth < min_total_depth:
         logger.debug(
