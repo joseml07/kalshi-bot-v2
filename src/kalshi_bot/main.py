@@ -1762,7 +1762,7 @@ async def _check_settlements(
         except Exception:
             logger.warning("settlement_check_failed ticker=%s", ticker, exc_info=True)
             continue
-        if market.get("status") not in ("determined", "settled"):
+        if market.get("status") not in ("determined", "settled", "finalized"):
             continue
         result = market.get("result", "")
         risk_events = executor.record_settlement(ticker, result)

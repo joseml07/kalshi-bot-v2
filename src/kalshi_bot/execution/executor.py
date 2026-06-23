@@ -21,7 +21,7 @@ from kalshi_bot.risk.manager import RiskManager
 from kalshi_bot.risk.sizing import DEFAULT_KELLY_FRACTION, MAX_CONTRACTS, MAX_COST_DOLLARS, kelly_size
 from kalshi_bot.strategy.fees import maker_fee, taker_fee
 from kalshi_bot.strategy.asset_config import maker_timeout_for_strength
-from kalshi_bot.strategy.signals import Signal
+from kalshi_bot.strategy.signals import Side, Signal, StrategyName
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,7 @@ class Executor:
         self._get_orderbook: (
             Callable[[str], tuple[OrderBook, datetime] | None] | None
         ) = None
+        self._load_unfilled_orders()
         self._reconcile_orphans()
 
     def attach_orderbook_source(
@@ -151,6 +152,55 @@ class Executor:
         plain callable avoids coupling the executor to the WS feed class.
         """
         self._get_orderbook = fn
+
+    def _load_unfilled_orders(self) -> None:
+        """Reload unfilled trades from DB into memory on startup.
+
+        After a restart, in-flight orders are lost from memory. This
+        reconstructs TrackedOrders from DB rows with pnl=NULL so that
+        _check_settlements can find and finalise them.
+        """
+        from datetime import timedelta
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        rows = self._db.execute(
+            """SELECT order_id, timestamp, ticker, symbol, strategy, side,
+                      contracts, price, edge, net_edge, route
+               FROM trades
+               WHERE pnl IS NULL AND fees IS NULL
+                 AND timestamp > ?
+               ORDER BY id""",
+            (cutoff,),
+        ).fetchall()
+        for row in rows:
+            oid = row[0]
+            if oid in self._orders:
+                continue
+            sig = Signal(
+                timestamp=datetime.fromisoformat(row[1]),
+                strategy=StrategyName(row[4]),
+                ticker=row[2],
+                symbol=row[3],
+                side=Side(row[5]),
+                edge=Decimal(str(row[8])),
+                net_edge=Decimal(str(row[9])),
+                kalshi_price=Decimal(str(row[7])),
+                real_prob=0.0,
+                seconds_remaining=0,
+                contracts=int(row[6]),
+                route=row[10] if row[10] else "taker",
+            )
+            tracked = TrackedOrder(
+                signal=sig,
+                order_id=oid,
+                contracts=int(row[6]),
+                price=Decimal(str(row[7])),
+            )
+            tracked.state = OrderState.FILLED
+            tracked.db_logged = True
+            self._orders[oid] = tracked
+        if rows:
+            logger.info("loaded_unfilled_orders count=%d", len(rows))
 
     def _reconcile_orphans(self) -> None:
         """Mark old trades with pnl=NULL as orphans.
