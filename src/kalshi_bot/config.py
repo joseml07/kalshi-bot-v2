@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # Settlement edge strategy (V3 — sell expensive YES, hold to expiry)
     settlement_edge_enabled: bool = Field(default=True)
     settlement_edge_sell_threshold: float = Field(default=0.85, ge=0.50, le=0.99)
-    settlement_edge_max_sell_threshold: float = Field(default=0.98, ge=0.50, le=0.99)
+    settlement_edge_max_sell_threshold: float = Field(default=0.98, ge=0.50, le=1.0)
     settlement_edge_min_time: int = Field(default=10)
     settlement_edge_max_time: int = Field(default=900)
     settlement_edge_allowed_hours: str = Field(
