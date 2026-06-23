@@ -303,17 +303,30 @@ class Executor:
         # the HTTP response — the 2026-04-16 live incident placed ~25
         # duplicate orders against a single signal for exactly this reason.
         self._risk.record_fill(signal.ticker, side=signal.side.value)
-        try:
-            order_resp = await self._client.place_order(
-                ticker=signal.ticker,
-                action="buy",
-                side=signal.side.value,
-                price_dollars=entry_price,
-                count=contracts,
-            )
-        except Exception:
+        last_error = None
+        for attempt in range(3):
+            try:
+                order_resp = await self._client.place_order(
+                    ticker=signal.ticker,
+                    action="buy",
+                    side=signal.side.value,
+                    price_dollars=entry_price,
+                    count=contracts,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    logger.warning(
+                        "place_order_retry",
+                        ticker=signal.ticker,
+                        attempt=attempt + 1,
+                        error=str(exc)[:100],
+                    )
+                    await asyncio.sleep(0.5 * (attempt + 1))
+        else:
             self._risk.release_reservation(signal.ticker)
-            raise
+            raise last_error  # type: ignore[misc]
         order_id = str(order_resp["order_id"])
         client_oid = order_resp.get("client_order_id")
         tracked = TrackedOrder(
