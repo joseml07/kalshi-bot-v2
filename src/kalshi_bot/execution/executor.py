@@ -383,7 +383,17 @@ class Executor:
                 continue
             status = api_order.get("status", "")
             if status in ("executed", "filled"):
+                # V2 order objects expose side-specific fixed-point prices
+                # (yes_price_dollars / no_price_dollars) rather than a flat
+                # "price" field; fall back to the side-appropriate one.
                 fill_price = api_order.get("price")
+                if fill_price is None:
+                    side_field = (
+                        "yes_price_dollars"
+                        if order.signal.side.value == "yes"
+                        else "no_price_dollars"
+                    )
+                    fill_price = api_order.get(side_field)
                 if fill_price:
                     order.price = Decimal(str(fill_price))
 

@@ -187,41 +187,64 @@ class KalshiClient:
         price_dollars: Decimal,
         count: int,
         *,
+        time_in_force: str = "good_till_canceled",
         max_attempts: int = 3,
         timeout_override: float | None = None,
     ) -> dict[str, Any]:
-        """Place a limit order.
+        """Place a limit order via the Kalshi V2 create-order endpoint.
+
+        Kalshi deprecated the legacy ``POST /portfolio/orders`` endpoint — it
+        now returns ``410 deprecated_v1_order_endpoint``. The V2 endpoint
+        ``POST /portfolio/events/orders`` uses a single YES-book model where
+        ``side`` is ``bid``/``ask`` and ``price`` is the YES-leg price. We map
+        the bot's (action, yes/no side, side-price) into that model:
+
+            buy  yes @ p  -> bid, yes_price = p
+            sell yes @ p  -> ask, yes_price = p
+            buy  no  @ p  -> ask, yes_price = 1 - p   (selling YES == buying NO)
+            sell no  @ p  -> bid, yes_price = 1 - p
 
         Args:
             ticker: Market ticker.
             action: "buy" or "sell".
             side: "yes" or "no".
-            price_dollars: Price as decimal dollars (e.g., Decimal("0.45")).
+            price_dollars: Price as decimal dollars for the given side.
             count: Number of contracts.
+            time_in_force: Kalshi TIF (default good_till_canceled — a resting
+                limit, matching the legacy ``type: limit`` lifecycle the
+                executor polls and cancels).
             max_attempts: Number of retry attempts (default 3).
             timeout_override: Per-request timeout in seconds (None = client default).
 
         Returns:
-            Order response dict.
+            Flat V2 order response: order_id, client_order_id, fill_count,
+            remaining_count, ts_ms (NOT nested under "order").
         """
+        p = Decimal(str(price_dollars))
+        if side == "yes":
+            yes_price = p
+            book_side = "bid" if action == "buy" else "ask"
+        elif side == "no":
+            yes_price = Decimal("1") - p
+            book_side = "ask" if action == "buy" else "bid"
+        else:
+            raise ValueError(f"unknown side: {side!r}")
+        # Clamp to the tradeable 1c-99c band (fixed-point dollar string).
+        yes_price = max(Decimal("0.01"), min(Decimal("0.99"), yes_price))
         body: dict[str, Any] = {
             "ticker": ticker,
-            "action": action,
-            "side": side,
-            "type": "limit",
-            "yes_price_dollars": str(price_dollars) if side == "yes" else None,
-            "no_price_dollars": str(price_dollars) if side == "no" else None,
-            "count": count,
+            "side": book_side,
+            "count": str(int(count)),
+            "price": f"{yes_price:.2f}",
+            "time_in_force": time_in_force,
+            "self_trade_prevention_type": "taker_at_cross",
             "client_order_id": str(uuid.uuid4()),
         }
-        # Remove None price field
-        body = {k: v for k, v in body.items() if v is not None}
         result = await self._request(
-            "POST", "/portfolio/orders", json_body=body, is_write=True,
+            "POST", "/portfolio/events/orders", json_body=body, is_write=True,
             max_attempts=max_attempts, timeout_override=timeout_override,
         )
-        order: dict[str, Any] = result["order"]
-        return order
+        return result
 
     async def get_order(self, order_id: str) -> dict[str, Any]:
         """Fetch a single order by ID."""

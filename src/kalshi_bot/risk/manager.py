@@ -200,13 +200,29 @@ class RiskManager:
         }
 
     def sync_positions(self, positions: list[dict[str, Any]]) -> None:
-        """Sync open positions from Kalshi API response."""
+        """Sync open positions from Kalshi API response.
+
+        Kalshi's portfolio/positions response now reports holdings as the
+        fixed-point string field ``position_fp`` (e.g. "1.00", "-2.00"); the
+        legacy integer fields (``market_position``/``yes_position``/
+        ``no_position``) are no longer present. We accept both so position
+        sync keeps working across the API change.
+        """
+        def _nonzero(p: dict[str, Any]) -> bool:
+            fp = p.get("position_fp")
+            if fp is not None:
+                try:
+                    return Decimal(str(fp)) != 0
+                except (ArithmeticError, ValueError):
+                    return False
+            return (
+                p.get("market_position", 0) != 0
+                or p.get("yes_position", 0) != 0
+                or p.get("no_position", 0) != 0
+            )
+
         self._open_position_tickers = {
-            p["ticker"]
-            for p in positions
-            if p.get("market_position", 0) != 0
-            or p.get("yes_position", 0) != 0
-            or p.get("no_position", 0) != 0
+            p["ticker"] for p in positions if _nonzero(p)
         }
 
     @property

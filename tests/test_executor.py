@@ -110,7 +110,13 @@ async def test_live_submit_failure_releases_reservation(tmp_path: Path) -> None:
     settings = _settings()
     risk = RiskManager(settings)
     client = _StubClient()
-    client.fail_next = True
+
+    # place_order retries internally (3 attempts), so a single-shot failure
+    # recovers. Force every attempt to raise to exercise the give-up path.
+    async def _always_fail(**_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("simulated place_order failure")
+
+    client.place_order = _always_fail  # type: ignore[method-assign]
     db = tmp_path / "trades.db"
     executor = Executor(
         client,  # type: ignore[arg-type]
