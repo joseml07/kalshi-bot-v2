@@ -125,14 +125,11 @@ def evaluate_settlement_edge(
     )
 
     # We sell YES (= buy NO). The edge is: prob DOWN - NO_price.
-    # NO price ≈ 1 - YES_ask (approximate; actual NO_ask used if available)
-    no_price = orderbook.best_no_ask
-    if no_price is not None:
-        entry_price = float(no_price)
-        side = Side.NO
-    else:
-        entry_price = 1.0 - float(taker_price)
-        side = Side.NO
+    # NO price = 1 - YES_ask, consistent with the trigger threshold above.
+    # Using best_no_ask (1 - YES_bid) would price from the wrong side of
+    # the spread, inflating the entry price and distorting edge/sizing.
+    entry_price = 1.0 - float(taker_price)
+    side = Side.NO
 
     est_down_prob = 1.0 - up_prob
     raw_edge = est_down_prob - entry_price

@@ -386,6 +386,8 @@ class Executor:
                 # V2 order objects expose side-specific fixed-point prices
                 # (yes_price_dollars / no_price_dollars) rather than a flat
                 # "price" field; fall back to the side-appropriate one.
+                # Kalshi V2 is YES-book — flat "price" is always YES-space.
+                # For NO-side orders we must convert to NO equivalent.
                 fill_price = api_order.get("price")
                 if fill_price is None:
                     side_field = (
@@ -394,6 +396,8 @@ class Executor:
                         else "no_price_dollars"
                     )
                     fill_price = api_order.get(side_field)
+                elif order.signal.side.value == "no":
+                    fill_price = str(Decimal("1") - Decimal(str(fill_price)))
                 if fill_price:
                     order.price = Decimal(str(fill_price))
 
