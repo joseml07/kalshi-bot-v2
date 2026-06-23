@@ -888,6 +888,7 @@ async def _fast_eval_loop(
                             ticker,
                             orderbook,
                             sell_threshold=settings.settlement_edge_sell_threshold,
+                            max_sell_threshold=settings.settlement_edge_max_sell_threshold,
                             edge_threshold=settings.settlement_edge_higher_edge_threshold,
                             min_time=settings.settlement_edge_min_time,
                             max_time=settings.settlement_edge_max_time,
@@ -1173,7 +1174,7 @@ async def _fast_eval_loop(
                         _record_reason(symbol, ticker, "trade")
                         last_risk_block.pop(ticker, None)
                         executor.log_signal(
-                            signal, "trade", f"order_id={submit_result.order.order_id}"
+                            signal, "trade", f"order_id={submit_result.order.order_id} mult={getattr(signal,'sizing_multiplier',1.0):.1f}x"
                         )
                         if alerter is not None:
                             await alerter.trade_placed(

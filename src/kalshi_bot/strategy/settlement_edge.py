@@ -32,6 +32,7 @@ def evaluate_settlement_edge(
     orderbook: OrderBook,
     *,
     sell_threshold: float = 0.85,
+    max_sell_threshold: float = 0.98,
     edge_threshold: float = 0.02,
     min_time: int = 10,
     max_time: int = 900,
@@ -93,6 +94,9 @@ def evaluate_settlement_edge(
     if float(taker_price) < sell_threshold:
         return None
     if float(taker_price) >= 1.0:
+        return None
+    # Skip extreme prices where market is almost always right (>=98c has negative edge)
+    if float(taker_price) > max_sell_threshold:
         return None
 
     # Depth gate
