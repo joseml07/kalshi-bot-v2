@@ -319,9 +319,11 @@ class Executor:
                 if attempt < 2:
                     logger.warning(
                         "place_order_retry",
-                        ticker=signal.ticker,
-                        attempt=attempt + 1,
-                        error=str(exc)[:100],
+                        extra={
+                            "ticker": signal.ticker,
+                            "attempt": attempt + 1,
+                            "error": str(exc)[:100],
+                        },
                     )
                     await asyncio.sleep(0.5 * (attempt + 1))
         else:
