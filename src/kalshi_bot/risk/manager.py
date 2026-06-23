@@ -31,7 +31,10 @@ class RiskManager:
         # of paper trading is unobstructed signal observation. Capital-safety
         # checks (kill switch, concurrent positions) still apply.
         self._paper_mode: bool = settings.trading_mode == "paper"
-        self._daily_loss_limit = Decimal(str(settings.daily_loss_limit))
+        dl_limit = float(settings.daily_loss_limit)
+        self._daily_loss_limit: Decimal | None = (
+            Decimal(str(dl_limit)) if dl_limit > 0 else None
+        )
         self._max_concurrent = settings.max_concurrent_positions
         self._daily_pnl: Decimal = Decimal("0")
         self._pnl_date: date = _today()
@@ -253,6 +256,8 @@ class RiskManager:
             raise RiskVetoError("Kill switch file exists")
 
     def _check_daily_loss(self) -> None:
+        if self._daily_loss_limit is None:
+            return
         if self._daily_pnl <= -self._daily_loss_limit:
             raise RiskVetoError(
                 f"Daily loss limit hit: {self._daily_pnl} <= -{self._daily_loss_limit}"
